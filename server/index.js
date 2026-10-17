@@ -1,6 +1,8 @@
 // ============================================================================
-// Agent Ops Center — server v3 (adds full Git/PR system)
-// Node 20+, express + socket.io
+// Agent Ops Center — server v4
+// - No message limits (JSONL append-only, paginated reads)
+// - Per-agent admin terminal (root via sudo -n, isolated per agentId)
+// - Full Git/PR system
 // ============================================================================
 'use strict';
 const express = require('express');
@@ -9,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { exec } = require('child_process');
+const { exec, spawn, execSync } = require('child_process');
 const { Server } = require('socket.io');
 
 const PORT = Number(process.env.PORT || 8080);
@@ -21,33 +23,102 @@ const HOME = os.homedir();
 const ROOT = path.resolve(__dirname, '..');
 const SRC_DIR = path.join(HOME, 'fortnite-src');
 const REPO_DIR = path.join(HOME, 'idk');
-const STATE_FILE = '/tmp/agent-ops-state.json';
-const MF_LOG = path.join(HOME, 'mf.log');
-const TUNNEL_LOG = path.join(HOME, 'tunnel.log');
-const SERVER_LOG = path.join(HOME, 'server.log');
+
+// Storage files
+const STATE_FILE  = '/tmp/agent-ops-state.json';
+const MSG_FILE    = '/tmp/agent-ops-messages.jsonl';
+const NOTIF_FILE  = '/tmp/agent-ops-notifications.jsonl';
+const PRS_FILE    = '/tmp/agent-ops-prs.json';
+
+const MF_LOG      = path.join(HOME, 'mf.log');
+const TUNNEL_LOG  = path.join(HOME, 'tunnel.log');
+const SERVER_LOG  = path.join(HOME, 'server.log');
 
 const CHANNELS = ['general', 'interaction', 'quickbars', 'loot', 'vehicles', 'building', 'inventory', 'crash-debug', 're-tools', 'builds'];
+const TERM_BUFFER_MAX = 1024 * 1024; // 1MB per agent terminal buffer
 
+// ─── state ───
 const state = {
   agents: [], messages: [], notifications: [], commits: [], prs: [],
   tunnel: '', tunnelIssue: null, bootedAt: Date.now(),
 };
+
+function log(...a) {
+  const line = `[${new Date().toISOString()}] ${a.join(' ')}`;
+  console.log(line);
+  try { fs.appendFileSync(SERVER_LOG, line + '\n'); } catch {}
+}
+
+// ─── load persisted state ───
 try {
   const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
   Object.assign(state, s);
-  if (s && s.pat) PAT = s.pat;
-  if (!state.prs) state.prs = [];
+  if (s.pat) PAT = s.pat;
 } catch {}
-const save = () => { try { fs.writeFileSync(STATE_FILE, JSON.stringify({ ...state, pat: PAT })); } catch (e) { console.error('save failed', e.message); } };
-const uid = () => crypto.randomBytes(6).toString('hex');
+try {
+  state.prs = JSON.parse(fs.readFileSync(PRS_FILE, 'utf8'));
+} catch { state.prs = []; }
 
+// Load messages (append-only JSONL, no limit)
+(function loadMessages() {
+  try {
+    const raw = fs.readFileSync(MSG_FILE, 'utf8');
+    const lines = raw.split('\n');
+    let bad = 0;
+    for (const l of lines) {
+      if (!l.trim()) continue;
+      try { state.messages.push(JSON.parse(l)); } catch { bad++; }
+    }
+    log(`loaded ${state.messages.length} messages (${bad} corrupt)`);
+  } catch {}
+})();
+
+// Load notifications
+(function loadNotifs() {
+  try {
+    const raw = fs.readFileSync(NOTIF_FILE, 'utf8');
+    const lines = raw.split('\n');
+    const byId = new Map();
+    for (const l of lines) {
+      if (!l.trim()) continue;
+      try {
+        const n = JSON.parse(l);
+        byId.set(n.id, n); // latest wins
+      } catch {}
+    }
+    state.notifications = [...byId.values()];
+    log(`loaded ${state.notifications.length} notifications`);
+  } catch {}
+})();
+
+// ─── save ───
+function saveState() {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+      agents: state.agents, commits: state.commits,
+      tunnel: state.tunnel, tunnelIssue: state.tunnelIssue,
+      bootedAt: state.bootedAt, pat: PAT,
+    }));
+  } catch (e) { log('save state failed', e.message); }
+}
+function savePRs() {
+  try { fs.writeFileSync(PRS_FILE, JSON.stringify(state.prs)); } catch {}
+}
+function appendMessage(m) {
+  try { fs.appendFileSync(MSG_FILE, JSON.stringify(m) + '\n'); } catch (e) { log('msg append failed', e.message); }
+}
+function appendNotification(n) {
+  try { fs.appendFileSync(NOTIF_FILE, JSON.stringify(n) + '\n'); } catch {}
+}
+
+// ─── express / socket ───
 const app = express();
-app.use(express.json({ limit: '40mb' }));
+app.use(express.json({ limit: '500mb' })); // no practical message limit
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' }, maxHttpBufferSize: 40e6 });
+const io = new Server(server, { cors: { origin: '*' }, maxHttpBufferSize: 500e6 });
 
 const bcast = (ev, data) => { try { io.emit(ev, data); } catch {} };
-const log = (...a) => { const line = `[${new Date().toISOString()}] ${a.join(' ')}`; console.log(line); try { fs.appendFileSync(SERVER_LOG, line + '\n'); } catch {} };
+const uid = () => crypto.randomBytes(6).toString('hex');
 
 function auth(req, res, next) {
   const c = req.headers['x-code'] || req.query.code || (req.body && req.body.code);
@@ -57,15 +128,80 @@ function auth(req, res, next) {
 
 function agentById(id) { return state.agents.find(a => a.id === id); }
 function touchAgent(id) { const a = agentById(id); if (a) a.lastPing = Date.now(); }
+
 const ONLINE_MS = 3 * 60 * 1000;
 const ACTIVE_MS = 15 * 60 * 1000;
 const agentView = a => ({ ...a, online: Date.now() - a.lastPing < ONLINE_MS, active: Date.now() - a.lastPing < ACTIVE_MS });
-
 function activeApproverIds(exceptId) {
   return state.agents.filter(a => a.id !== exceptId && Date.now() - a.lastPing < ACTIVE_MS).map(a => a.id);
 }
 
-// ---------------- approval engine (legacy messages/notifications) ----------------
+// ============================================================================
+// ═══════════════════════ ADMIN TERMINAL (per agent) ═══════════════════════
+// ============================================================================
+const isRoot = !!(process.getuid && process.getuid() === 0);
+const hasPasswordlessSudo = (() => {
+  if (isRoot) return false;
+  try { execSync('sudo -n true', { stdio: 'ignore', timeout: 2000 }); return true; } catch { return false; }
+})();
+const ADMIN_OK = isRoot || hasPasswordlessSudo;
+log(`terminal: isRoot=${isRoot} sudo=${hasPasswordlessSudo} admin=${ADMIN_OK}`);
+
+const terminals = new Map(); // agentId -> { proc, buffer, startedAt, admin }
+
+function startTerminal(agentId) {
+  const existing = terminals.get(agentId);
+  if (existing && !existing.proc.killed && existing.proc.exitCode === null) return existing;
+
+  let cmd, args, admin = false;
+  if (isRoot) { cmd = 'bash'; args = ['-i']; admin = true; }
+  else if (hasPasswordlessSudo) { cmd = 'sudo'; args = ['-n', 'bash', '-i']; admin = true; }
+  else { cmd = 'bash'; args = ['-i']; admin = false; }
+
+  const proc = spawn(cmd, args, {
+    cwd: HOME,
+    env: {
+      ...process.env,
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      PS1: admin ? '\\[\\e[31m\\]root@ops\\[\\e[0m\\]:\\w# ' : '\\[\\e[32m\\]user@ops\\[\\e[0m\\]:\\w$ ',
+      HISTFILE: `/tmp/ops-term-${agentId}.history`,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  const term = { proc, buffer: '', startedAt: Date.now(), agentId, admin };
+
+  const push = (data, isErr) => {
+    term.buffer += data;
+    if (term.buffer.length > TERM_BUFFER_MAX) term.buffer = term.buffer.slice(-TERM_BUFFER_MAX);
+    io.to(`term:${agentId}`).emit('term:out', { agentId, data, err: !!isErr });
+  };
+
+  proc.stdout.on('data', d => push(d.toString('utf8'), false));
+  proc.stderr.on('data', d => push(d.toString('utf8'), true));
+  proc.on('close', code => {
+    push(`\r\n\x1b[33m[shell exited with code ${code}]\x1b[0m\r\n`);
+    terminals.delete(agentId);
+  });
+  proc.on('error', err => push(`\r\n\x1b[31m[spawn error: ${err.message}]\x1b[0m\r\n`, true));
+
+  terminals.set(agentId, term);
+  log(`terminal started for ${agentId} (admin=${admin})`);
+  return term;
+}
+
+function killTerminal(agentId) {
+  const t = terminals.get(agentId);
+  if (!t) return false;
+  try { t.proc.kill('SIGKILL'); } catch {}
+  terminals.delete(agentId);
+  return true;
+}
+
+// ============================================================================
+// ═══════════════════════ APPROVALS ENGINE (legacy notifications) ══════════
+// ============================================================================
 function createNotification({ type, label, messageId = null, action = null, authorId }) {
   const n = {
     id: uid(), type, label, messageId, action,
@@ -73,14 +209,16 @@ function createNotification({ type, label, messageId = null, action = null, auth
     required: activeApproverIds(authorId), votes: [], result: null,
   };
   state.notifications.push(n);
+  appendNotification(n);
   if (n.required.length === 0) {
     n.status = 'approved';
     n.result = 'auto-approved (solo mode)';
+    appendNotification(n);
     executeIfAction(n);
   } else {
     bcast('notification:new', n);
   }
-  save();
+  saveState();
   return n;
 }
 
@@ -89,12 +227,17 @@ function vote(n, agentId, decision) {
   if (!n.required.includes(agentId)) {
     const v = n.votes.find(v => v.agentId === agentId);
     if (v) v.decision = decision; else n.votes.push({ agentId, decision, at: Date.now(), advisory: true });
+    appendNotification(n);
     return { ok: true, advisory: true };
   }
   const v = n.votes.find(v => v.agentId === agentId);
   if (v) v.decision = decision; else n.votes.push({ agentId, decision, at: Date.now() });
+  appendNotification(n);
+
   if (n.votes.some(v => v.decision === 'reject' && n.required.includes(v.agentId))) {
-    n.status = 'rejected'; bcast('notification:updated', n); save();
+    n.status = 'rejected';
+    bcast('notification:updated', n);
+    appendNotification(n);
     if (n.messageId) syncMessageStatus(n.messageId);
     return { ok: true, status: n.status };
   }
@@ -102,18 +245,21 @@ function vote(n, agentId, decision) {
   if (n.required.every(id => approved.includes(id))) {
     n.status = 'approved';
     executeIfAction(n);
-    bcast('notification:updated', n); save();
+    bcast('notification:updated', n);
+    appendNotification(n);
     if (n.messageId) syncMessageStatus(n.messageId);
     return { ok: true, status: 'approved' };
   }
-  bcast('notification:updated', n); save();
+  bcast('notification:updated', n);
   return { ok: true, status: n.status };
 }
 
 function recordCommit(entry) {
   const c = { id: uid(), at: Date.now(), ...entry };
-  state.commits.unshift(c); state.commits = state.commits.slice(0, 100);
-  bcast('commit:new', c); save();
+  state.commits.unshift(c);
+  state.commits = state.commits.slice(0, 100);
+  bcast('commit:new', c);
+  saveState();
 }
 
 function executeIfAction(n) {
@@ -122,15 +268,17 @@ function executeIfAction(n) {
   try {
     if (a.type === 'command') {
       exec(a.cmd, { cwd: a.cwd || ROOT, timeout: (a.timeout || 180) * 1000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-        n.result = { cmd: a.cmd, code: err ? (err.code ?? 1) : 0, stdout: (stdout || '').slice(0, 400000), stderr: (stderr || (err && err.message) || '').slice(0, 100000) };
-        bcast('notification:updated', n); save();
+        n.result = { cmd: a.cmd, code: err ? (err.code ?? 1) : 0, stdout: (stdout || ''), stderr: (stderr || (err && err.message) || '') };
+        bcast('notification:updated', n);
+        appendNotification(n);
       });
     } else if (a.type === 'commit') {
       pushFileToGitHub(a.path, a.content, a.message).then(r => {
         n.result = r;
         recordCommit({ path: a.path, message: a.message, by: a.byName || 'approval-flow', sha: (r.commit || '').slice(0, 7), ok: r.ok });
-        bcast('notification:updated', n); save();
-      }).catch(e => { n.result = { error: e.message }; bcast('notification:updated', n); save(); });
+        bcast('notification:updated', n);
+        appendNotification(n);
+      }).catch(e => { n.result = { error: e.message }; bcast('notification:updated', n); appendNotification(n); });
     }
   } catch (e) { n.result = { error: e.message }; }
 }
@@ -140,15 +288,13 @@ function syncMessageStatus(messageId) {
   if (!m) return;
   const n = state.notifications.find(x => x.messageId === messageId);
   if (n && ['approved', 'rejected'].includes(n.status)) m.status = n.status;
-  bcast('message:updated', m); save();
+  bcast('message:updated', m);
 }
 
 // ============================================================================
-// ═══════════════════════ PULL REQUESTS ENGINE ═══════════════════════════
+// ═══════════════════════════ PULL REQUESTS ════════════════════════════════
 // ============================================================================
 function prById(id) { return state.prs.find(p => p.id === id); }
-
-// Strip heavy file content before broadcasting
 function prSummary(pr) {
   return {
     ...pr,
@@ -156,7 +302,6 @@ function prSummary(pr) {
   };
 }
 
-// Simple unified-diff generator (LCS-based, hunks with 3 lines of context)
 function makeUnifiedDiff(oldStr, newStr, filePath) {
   const a = (oldStr || '').split('\n');
   const b = (newStr || '').split('\n');
@@ -168,10 +313,8 @@ function makeUnifiedDiff(oldStr, newStr, filePath) {
     for (const l of b) ops.push({ t: '+', l });
   } else {
     const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-    for (let i = 1; i <= n; i++) {
-      for (let j = 1; j <= m; j++) {
-        dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
+    for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
     }
     ops = [];
     let i = n, j = m;
@@ -185,7 +328,6 @@ function makeUnifiedDiff(oldStr, newStr, filePath) {
   const changeIdxs = [];
   for (let k = 0; k < ops.length; k++) if (ops[k].t !== ' ') changeIdxs.push(k);
   if (!changeIdxs.length) return '';
-
   const ctx = 3;
   const groups = [];
   let gs = Math.max(0, changeIdxs[0] - ctx);
@@ -196,7 +338,6 @@ function makeUnifiedDiff(oldStr, newStr, filePath) {
     else { groups.push([gs, ge]); gs = Math.max(0, idx - ctx); ge = Math.min(ops.length - 1, idx + ctx); }
   }
   groups.push([gs, ge]);
-
   const hunks = [];
   for (const [s, e] of groups) {
     let oS = 1, nS = 1;
@@ -228,14 +369,6 @@ function safeRepoPath(rel) {
   const abs = path.resolve(REPO_DIR, clean);
   if (!abs.startsWith(REPO_DIR)) throw new Error('path escapes repo');
   return { rel: clean, abs };
-}
-
-async function applyFilesToRepo(files) {
-  for (const f of files) {
-    const { abs } = safeRepoPath(f.path);
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, String(f.content || ''), 'utf8');
-  }
 }
 
 function commitAndPush(title) {
@@ -287,7 +420,7 @@ app.post('/api/repo/file', auth, (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// ─── PRs CRUD ───
+// ─── PRs ───
 app.get('/api/prs', auth, (req, res) => {
   res.json(state.prs.slice().reverse().map(prSummary));
 });
@@ -306,7 +439,6 @@ app.post('/api/prs', auth, (req, res) => {
   if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'files required' });
   touchAgent(authorId);
 
-  // Validate paths and compute stats
   const processed = [];
   for (const f of files) {
     if (!f || !f.path) return res.status(400).json({ error: 'each file needs path' });
@@ -323,8 +455,8 @@ app.post('/api/prs', auth, (req, res) => {
   const required = activeApproverIds(authorId);
   const pr = {
     id: uid(),
-    title: String(title).slice(0, 200),
-    description: String(description || '').slice(0, 5000),
+    title: String(title).slice(0, 500),
+    description: String(description || ''),
     files: processed,
     authorId, authorName: author.name || authorName || '?',
     createdAt: Date.now(),
@@ -332,8 +464,8 @@ app.post('/api/prs', auth, (req, res) => {
     required, votes: [], comments: [],
   };
   state.prs.push(pr);
+  savePRs();
   bcast('pr:new', prSummary(pr));
-  save();
   log(`PR created by ${pr.authorName}: ${pr.title} (status=${pr.status})`);
   res.json(prSummary(pr));
 });
@@ -351,45 +483,29 @@ app.get('/api/prs/:id/diff', auth, (req, res) => {
 app.post('/api/prs/:id/vote', auth, (req, res) => {
   const pr = prById(req.params.id);
   if (!pr) return res.status(404).json({ error: 'not found' });
-  if (!['open', 'changes_requested', 'approved'].includes(pr.status)) {
-    return res.status(400).json({ error: 'PR is ' + pr.status });
-  }
+  if (!['open', 'changes_requested', 'approved'].includes(pr.status)) return res.status(400).json({ error: 'PR is ' + pr.status });
   const { agentId, decision, comment } = req.body;
-  if (!['approve', 'request_changes', 'reject'].includes(decision)) {
-    return res.status(400).json({ error: 'bad decision' });
-  }
+  if (!['approve', 'request_changes', 'reject'].includes(decision)) return res.status(400).json({ error: 'bad decision' });
   const agent = agentById(agentId);
   if (!agent) return res.status(400).json({ error: 'unknown agent' });
   touchAgent(agentId);
 
-  // New active agent voting → add to required
-  if (agentId !== pr.authorId && Date.now() - agent.lastPing < ACTIVE_MS && !pr.required.includes(agentId)) {
-    pr.required.push(agentId);
-  }
+  if (agentId !== pr.authorId && Date.now() - agent.lastPing < ACTIVE_MS && !pr.required.includes(agentId)) pr.required.push(agentId);
 
   const existing = pr.votes.find(v => v.agentId === agentId);
-  if (existing) {
-    existing.decision = decision;
-    existing.comment = String(comment || '').slice(0, 2000);
-    existing.at = Date.now();
-  } else {
-    pr.votes.push({ agentId, decision, comment: String(comment || '').slice(0, 2000), at: Date.now() });
-  }
+  if (existing) { existing.decision = decision; existing.comment = String(comment || ''); existing.at = Date.now(); }
+  else pr.votes.push({ agentId, decision, comment: String(comment || ''), at: Date.now() });
 
-  // Recompute status
   const requiredVotes = pr.votes.filter(v => pr.required.includes(v.agentId));
-  if (requiredVotes.some(v => v.decision === 'reject')) {
-    pr.status = 'rejected';
-  } else if (requiredVotes.some(v => v.decision === 'request_changes')) {
-    pr.status = 'changes_requested';
-  } else {
+  if (requiredVotes.some(v => v.decision === 'reject')) pr.status = 'rejected';
+  else if (requiredVotes.some(v => v.decision === 'request_changes')) pr.status = 'changes_requested';
+  else {
     const approvedIds = new Set(requiredVotes.filter(v => v.decision === 'approve').map(v => v.agentId));
     pr.status = pr.required.every(id => approvedIds.has(id)) ? 'approved' : 'open';
   }
 
+  savePRs();
   bcast('pr:updated', prSummary(pr));
-  save();
-  log(`PR ${pr.id.slice(0, 6)} vote: ${agent.name} → ${decision} (status=${pr.status})`);
   res.json({ ok: true, pr: prSummary(pr) });
 });
 
@@ -401,78 +517,46 @@ app.post('/api/prs/:id/comment', auth, (req, res) => {
   if (!text) return res.status(400).json({ error: 'content required' });
   if (agentId) touchAgent(agentId);
   const agent = agentById(agentId);
-  const comment = {
-    id: uid(),
-    agentId: agentId || null,
-    name: (agent && agent.name) || name || '?',
-    content: text.slice(0, 5000),
-    at: Date.now(),
-  };
+  const comment = { id: uid(), agentId: agentId || null, name: (agent && agent.name) || name || '?', content: text, at: Date.now() };
   pr.comments.push(comment);
+  savePRs();
   bcast('pr:comment', { prId: pr.id, comment });
-  save();
   res.json({ ok: true, comment });
 });
 
 app.post('/api/prs/:id/merge', auth, async (req, res) => {
   const pr = prById(req.params.id);
   if (!pr) return res.status(404).json({ error: 'not found' });
-  if (pr.status === 'merged') return res.status(400).json({ error: 'already merged' });
-  if (pr.status === 'rejected') return res.status(400).json({ error: 'PR was rejected' });
-  if (pr.status === 'closed') return res.status(400).json({ error: 'PR is closed' });
+  if (['merged', 'rejected', 'closed'].includes(pr.status)) return res.status(400).json({ error: 'PR is ' + pr.status });
 
-  // Absorb any currently-active agents who joined after creation
-  for (const id of activeApproverIds(pr.authorId)) {
-    if (!pr.required.includes(id)) pr.required.push(id);
-  }
+  for (const id of activeApproverIds(pr.authorId)) if (!pr.required.includes(id)) pr.required.push(id);
 
-  // Rejection check
   const rejection = pr.votes.find(v => v.decision === 'reject' && pr.required.includes(v.agentId));
-  if (rejection) {
-    const ag = agentById(rejection.agentId);
-    return res.status(400).json({ error: `rejected by ${ag ? ag.name : rejection.agentId}` });
-  }
-  // Active request-changes check
+  if (rejection) return res.status(400).json({ error: 'rejected by ' + rejection.agentId });
   for (const v of pr.votes) {
     if (v.decision === 'request_changes' && pr.required.includes(v.agentId)) {
       const ag = agentById(v.agentId);
-      if (ag && Date.now() - ag.lastPing < ACTIVE_MS) {
-        return res.status(400).json({ error: `changes requested by ${ag.name}: ${v.comment || ''}` });
-      }
+      if (ag && Date.now() - ag.lastPing < ACTIVE_MS) return res.status(400).json({ error: `changes requested by ${ag.name}: ${v.comment}` });
     }
   }
-  // All required must have approved
   const approvedIds = new Set(pr.votes.filter(v => v.decision === 'approve').map(v => v.agentId));
   const missing = pr.required.filter(id => !approvedIds.has(id));
-  if (missing.length > 0) {
-    return res.status(400).json({ error: `missing approvals (${missing.length})`, missing });
-  }
+  if (missing.length > 0) return res.status(400).json({ error: `missing approvals (${missing.length})`, missing });
 
-  // Conflict check: verify current disk state matches baseContent
+  // Conflict check
   for (const f of pr.files) {
-    try {
-      const { abs } = safeRepoPath(f.path);
-      let current = '';
-      try { current = fs.readFileSync(abs, 'utf8'); } catch { current = ''; }
-      if (current !== (f.baseContent || '')) {
-        return res.status(409).json({
-          error: `الملف ${f.path} تم تعديله خارج الـ PR — أعد فتحه وحدّث الاقتراح`,
-          conflict: f.path,
-        });
-      }
-    } catch (e) {
-      return res.status(500).json({ error: e.message });
-    }
+    const { abs } = safeRepoPath(f.path);
+    let current = '';
+    try { current = fs.readFileSync(abs, 'utf8'); } catch {}
+    if (current !== (f.baseContent || '')) return res.status(409).json({ error: `الملف ${f.path} تغيّر خارج الـ PR`, conflict: f.path });
   }
 
-  // Apply
-  try {
-    await applyFilesToRepo(pr.files);
-  } catch (e) {
-    return res.status(500).json({ error: 'apply failed: ' + e.message });
+  for (const f of pr.files) {
+    const { abs } = safeRepoPath(f.path);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, String(f.content || ''), 'utf8');
   }
 
-  // Commit + push
   const commitMsg = `PR#${pr.id.slice(0, 6)}: ${pr.title}`.slice(0, 200);
   const pushResult = await commitAndPush(commitMsg);
   const shaMatch = pushResult.out.match(/\[[\w./-]+ ([a-f0-9]{7,})\]/);
@@ -483,17 +567,9 @@ app.post('/api/prs/:id/merge', auth, async (req, res) => {
   pr.mergedCommit = shaMatch ? shaMatch[1] : null;
   pr.mergeResult = { ok: pushResult.ok, code: pushResult.code, err: pushResult.err };
 
-  recordCommit({
-    path: pr.files.map(f => f.path).join(', '),
-    message: commitMsg,
-    by: pr.authorName,
-    sha: pr.mergedCommit || 'local',
-    ok: pushResult.ok,
-  });
+  recordCommit({ path: pr.files.map(f => f.path).join(', '), message: commitMsg, by: pr.authorName, sha: pr.mergedCommit || 'local', ok: pushResult.ok });
+  savePRs();
   bcast('pr:updated', prSummary(pr));
-  save();
-  log(`PR ${pr.id.slice(0, 6)} MERGED by ${req.body.agentId || '?'} (push ok=${pushResult.ok})`);
-
   res.json({ ok: true, pr: prSummary(pr), push: { ok: pushResult.ok, out: pushResult.out.slice(-2000), err: pushResult.err.slice(-2000) } });
 });
 
@@ -503,16 +579,16 @@ app.post('/api/prs/:id/close', auth, (req, res) => {
   if (pr.status === 'merged') return res.status(400).json({ error: 'already merged' });
   pr.status = 'closed';
   pr.closedAt = Date.now();
+  savePRs();
   bcast('pr:updated', prSummary(pr));
-  save();
   res.json({ ok: true, pr: prSummary(pr) });
 });
 
 // ============================================================================
-// ═══════════════════════ GitHub API ═══════════════════════════════════════
+// ═══════════════════════════════ GitHub API ═══════════════════════════════
 // ============================================================================
 async function gh(apiPath, opts = {}) {
-  if (!PAT) throw new Error('no PAT configured (set via site Settings or PAT_TOKEN secret)');
+  if (!PAT) throw new Error('no PAT configured');
   const r = await fetch(`https://api.github.com${apiPath}`, {
     ...opts,
     headers: {
@@ -533,13 +609,11 @@ async function findOrCreateTunnelIssue() {
     let issue = issues.find(i => i.title.includes('Tunnel URL') && i.user.login === OWNER);
     if (!issue) {
       issue = await gh(`/repos/${OWNER}/${REPO}/issues`, {
-        method: 'POST', body: JSON.stringify({
-          title: '🌐 Tunnel URL (auto-updated by agent-ops)',
-          body: 'Latest Ops Center tunnel URL. Do not close this issue.',
-        }),
+        method: 'POST', body: JSON.stringify({ title: '🌐 Tunnel URL (auto-updated by agent-ops)', body: 'Latest Ops Center tunnel URL. Do not close this issue.' }),
       });
     }
-    state.tunnelIssue = issue.number; save();
+    state.tunnelIssue = issue.number;
+    saveState();
     return issue.number;
   } catch (e) { log('tunnel issue error:', e.message); return null; }
 }
@@ -551,7 +625,7 @@ async function postIssueComment(body) {
 }
 
 async function pushFileToGitHub(filePath, content, message, branch = 'main') {
-  let sha = undefined;
+  let sha;
   try {
     const existing = await gh(`/repos/${OWNER}/${REPO}/contents/${encodeURIComponent(filePath)}?ref=${branch}`);
     sha = existing.sha;
@@ -567,7 +641,7 @@ async function pushFileToGitHub(filePath, content, message, branch = 'main') {
 }
 
 // ---------------- boot ----------------
-log('=== Agent Ops Center v3 booting ===');
+log('=== Agent Ops Center v4 booting ===');
 function cloneIdk() {
   if (!PAT) return log('skip idk clone (no PAT yet)');
   exec(`git clone --depth 50 https://x-access-token:${PAT}@github.com/${OWNER}/${REPO}.git ${REPO_DIR} 2>&1 || (cd ${REPO_DIR} && git pull 2>&1)`,
@@ -579,9 +653,13 @@ if (PAT) findOrCreateTunnelIssue();
 // ---------------- meta ----------------
 app.get('/api/health', (req, res) => {
   const has = p => { try { return fs.existsSync(p); } catch { return false; } };
+  let msgFileSize = 0;
+  try { msgFileSize = fs.statSync(MSG_FILE).size; } catch {}
   res.json({
     ok: true, tunnel: state.tunnel, uptimeSec: Math.floor((Date.now() - state.bootedAt) / 1000),
     agents: state.agents.length, pat: !!PAT,
+    messages: state.messages.length, msgFileSize,
+    adminTerminal: ADMIN_OK, terminalsActive: terminals.size,
     files: {
       srcZip: has(path.join(SRC_DIR, 'src.zip')),
       libUnreal: has(path.join(SRC_DIR, 'libUnreal.so')) || has(path.join(SRC_DIR, 'src', 'libUnreal.so')),
@@ -590,19 +668,27 @@ app.get('/api/health', (req, res) => {
   });
 });
 app.get('/api/auth', auth, (req, res) => res.json({ ok: true }));
-app.get('/api/state', auth, (req, res) => res.json({
-  channels: CHANNELS, tunnel: state.tunnel, agents: state.agents.map(agentView),
-  messages: state.messages, notifications: state.notifications, commits: state.commits,
-  prOpen: (state.prs || []).filter(p => ['open', 'changes_requested', 'approved'].includes(p.status)).length,
-  pat: !!PAT, owner: OWNER, repo: REPO,
-}));
+app.get('/api/state', auth, (req, res) => {
+  // Return last 300 messages for initial view — pagination for older
+  res.json({
+    channels: CHANNELS, tunnel: state.tunnel, agents: state.agents.map(agentView),
+    messages: state.messages.slice(-300),
+    messageCount: state.messages.length,
+    notifications: state.notifications.slice(-200),
+    commits: state.commits,
+    prOpen: state.prs.filter(p => ['open', 'changes_requested', 'approved'].includes(p.status)).length,
+    pat: !!PAT, owner: OWNER, repo: REPO,
+    adminTerminal: ADMIN_OK,
+  });
+});
 app.post('/api/tunnel', (req, res) => {
   const url = String(req.body.url || '').trim();
   if (!url.includes('trycloudflare.com') && !url.includes('localhost')) return res.status(400).json({ error: 'bad url' });
-  state.tunnel = url; save();
+  state.tunnel = url;
+  saveState();
   log('tunnel set:', url);
   if (PAT && !url.includes('localhost')) {
-    postIssueComment(`🌐 **${url}**\n_Updated: ${new Date().toISOString()}_`).then(() => log('issue comment posted')).catch(e => log('issue comment failed:', e.message));
+    postIssueComment(`🌐 **${url}**\n_Updated: ${new Date().toISOString()}_`).catch(e => log('issue comment failed:', e.message));
   }
   bcast('tunnel:set', url);
   res.json({ ok: true, tunnel: url });
@@ -614,7 +700,8 @@ app.post('/api/settings', auth, (req, res) => {
   const newPat = String(req.body.pat || '').trim();
   if (newPat && !/^gh[pousr]_[A-Za-z0-9]{30,}$/.test(newPat)) return res.status(400).json({ error: 'PAT format looks wrong' });
   if (newPat) {
-    PAT = newPat; save();
+    PAT = newPat;
+    saveState();
     cloneIdk();
     findOrCreateTunnelIssue().catch(() => {});
     log('PAT updated via site settings');
@@ -630,17 +717,20 @@ app.post('/api/agents', auth, (req, res) => {
   let a = state.agents.find(a => a.name.toLowerCase() === name.toLowerCase());
   if (!a) { a = { id: uid(), name, role: String(req.body.role || 'agent').slice(0, 40), createdAt: Date.now(), lastPing: Date.now() }; state.agents.push(a); }
   else { a.role = req.body.role || a.role; a.lastPing = Date.now(); }
-  save(); bcast('agents:update', state.agents.map(agentView));
+  saveState();
+  bcast('agents:update', state.agents.map(agentView));
   res.json(a);
 });
-app.post('/api/agents/:id/ping', auth, (req, res) => { touchAgent(req.params.id); save(); res.json({ ok: true }); });
+app.post('/api/agents/:id/ping', auth, (req, res) => { touchAgent(req.params.id); saveState(); res.json({ ok: true }); });
 
-// ---------------- chat + strict approvals (legacy) ----------------
+// ---------------- messages (NO LIMIT) ----------------
 app.get('/api/messages', auth, (req, res) => {
   let list = state.messages;
   if (req.query.channel) list = list.filter(m => m.channel === req.query.channel);
+  if (req.query.before) list = list.filter(m => m.createdAt < Number(req.query.before));
   if (req.query.since) list = list.filter(m => m.createdAt > Number(req.query.since));
-  res.json(list.slice(-400));
+  const limit = Math.min(Number(req.query.limit || 200), 1000);
+  res.json(list.slice(-limit));
 });
 
 app.post('/api/messages', auth, (req, res) => {
@@ -648,8 +738,8 @@ app.post('/api/messages', auth, (req, res) => {
   const author = agentById(authorId);
   if (!author) return res.status(400).json({ error: 'unknown authorId — register first' });
   if (!CHANNELS.includes(channel)) return res.status(400).json({ error: 'bad channel' });
-  const text = String(content || '').slice(0, 20000);
-  if (!text) return res.status(400).json({ error: 'content required' });
+  const text = String(content || ''); // ★ NO LIMIT
+  if (!text.length) return res.status(400).json({ error: 'content required' });
   touchAgent(authorId);
 
   const k = ['chat', 'command', 'commit', 'request'].includes(kind) ? kind : 'chat';
@@ -659,6 +749,7 @@ app.post('/api/messages', auth, (req, res) => {
     createdAt: Date.now(), status: 'pending', required: [], votes: [], result: null,
   };
   state.messages.push(m);
+  appendMessage(m);
 
   const n = createNotification({
     type: k, label: k === 'chat' ? `💬 ${author.name} في #${channel}` : `${k.toUpperCase()} اقتراح من ${author.name}`,
@@ -668,7 +759,8 @@ app.post('/api/messages', auth, (req, res) => {
       : null,
   });
   m.required = n.required; m.votes = n.votes; m.status = n.status;
-  bcast('message:new', m); save();
+
+  bcast('message:new', m);
   res.json({ message: m, notification: n });
 });
 
@@ -682,14 +774,14 @@ app.post('/api/messages/:id/vote', auth, (req, res) => {
   m.votes = n.votes; m.required = n.required;
   if (['approved', 'rejected'].includes(n.status)) m.status = n.status;
   if (n.result) m.result = n.result;
-  bcast('message:updated', m); save();
+  bcast('message:updated', m);
   res.json(r);
 });
 
 app.get('/api/notifications', auth, (req, res) => {
   let list = state.notifications;
   if (req.query.status) list = list.filter(n => n.status === req.query.status);
-  res.json(list.slice(-200));
+  res.json(list.slice(-500));
 });
 app.post('/api/notifications/:id/vote', auth, (req, res) => {
   const n = state.notifications.find(x => x.id === req.params.id);
@@ -700,28 +792,45 @@ app.post('/api/notifications/:id/vote', auth, (req, res) => {
   res.json(r);
 });
 
-// ---------------- commits feed ----------------
+// ---------------- commits ----------------
 app.get('/api/commits', auth, async (req, res) => {
   try {
     const list = await gh(`/repos/${OWNER}/${REPO}/commits?per_page=${req.query.per || 30}`);
     const ghCommits = list.map(c => ({ id: c.sha, sha: c.sha.slice(0, 7), msg: (c.commit.message || '').split('\n')[0].slice(0, 140), author: (c.commit.author || {}).name, date: c.commit.author && c.commit.author.date, source: 'github' }));
     res.json([...state.commits, ...ghCommits].slice(0, 80));
-  } catch (e) {
-    res.json(state.commits);
-  }
+  } catch (e) { res.json(state.commits); }
 });
 
-// ---------------- terminal ----------------
+// ---------------- terminal REST (fallback) ----------------
+app.get('/api/term/info', auth, (req, res) => {
+  res.json({ admin: ADMIN_OK, isRoot, sudo: hasPasswordlessSudo, active: terminals.size });
+});
+app.post('/api/term/start', auth, (req, res) => {
+  const id = req.body.agentId;
+  if (!agentById(id)) return res.status(400).json({ error: 'unknown agent' });
+  const t = startTerminal(id);
+  res.json({ ok: true, admin: t.admin, buffer: t.buffer });
+});
+app.post('/api/term/kill', auth, (req, res) => {
+  const ok = killTerminal(req.body.agentId);
+  res.json({ ok });
+});
+app.post('/api/term/exec', auth, (req, res) => {
+  const { agentId, cmd } = req.body;
+  if (!agentById(agentId)) return res.status(400).json({ error: 'unknown agent' });
+  if (!String(cmd || '').trim()) return res.status(400).json({ error: 'cmd required' });
+  exec(String(cmd), { cwd: HOME, timeout: 600000, maxBuffer: 64 * 1024 * 1024, shell: '/bin/bash' }, (err, stdout, stderr) => {
+    res.json({ cmd, code: err ? (err.code ?? 1) : 0, stdout: stdout || '', stderr: stderr || (err && err.message) || '' });
+  });
+});
+
+// ---------------- generic exec ----------------
 app.post('/api/exec', auth, (req, res) => {
   const cmd = String(req.body.cmd || '');
   if (!cmd.trim()) return res.status(400).json({ error: 'cmd required' });
-  const timeout = Math.min(Number(req.body.timeout || 180), 600) * 1000;
-  exec(cmd, { cwd: req.body.cwd || ROOT, timeout, maxBuffer: 16 * 1024 * 1024, shell: '/bin/bash' }, (err, stdout, stderr) => {
-    res.json({
-      cmd, code: err ? (err.code ?? 1) : 0,
-      stdout: (stdout || '').slice(0, 400000),
-      stderr: (stderr || (err && err.message) || '').slice(0, 100000),
-    });
+  const timeout = Math.min(Number(req.body.timeout || 180), 3600) * 1000;
+  exec(cmd, { cwd: req.body.cwd || ROOT, timeout, maxBuffer: 64 * 1024 * 1024, shell: '/bin/bash' }, (err, stdout, stderr) => {
+    res.json({ cmd, code: err ? (err.code ?? 1) : 0, stdout: stdout || '', stderr: stderr || (err && err.message) || '' });
   });
 });
 
@@ -732,7 +841,7 @@ app.get('/api/fs/ls', auth, (req, res) => {
   fs.readdir(dir, { withFileTypes: true }, (err, entries) => {
     if (err) return res.status(400).json({ error: err.message });
     const out = [];
-    for (const e of entries.slice(0, 2000)) {
+    for (const e of entries.slice(0, 5000)) {
       try {
         const st = fs.statSync(path.join(dir, e.name));
         out.push({ name: e.name, dir: e.isDirectory(), size: st.size, mtime: st.mtimeMs });
@@ -744,7 +853,7 @@ app.get('/api/fs/ls', auth, (req, res) => {
 });
 app.get('/api/fs/read', auth, (req, res) => {
   const p = safePath(req.query.path);
-  const bytes = Math.min(Number(req.query.bytes || 300000), 2000000);
+  const bytes = Math.min(Number(req.query.bytes || 2000000), 50000000);
   fs.readFile(p, (err, buf) => {
     if (err) return res.status(400).json({ error: err.message });
     const slice = buf.slice(0, bytes);
@@ -784,7 +893,7 @@ app.get('/api/mf/status', auth, (req, res) => {
 // ---------------- git local ----------------
 const gitCmd = (args, res) => exec(`git -C "${REPO_DIR}" ${args}`, { timeout: 60000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
   res.json({ code: err ? (err.code ?? 1) : 0, out: stdout, err: stderr || (err && err.message) || '' }));
-app.get('/api/git/status', auth, (req, res) => gitCmd('status --short --branch && echo --- && git -C "' + REPO_DIR + '" log --oneline -5', res));
+app.get('/api/git/status', auth, (req, res) => gitCmd('status --short --branch && echo --- && git log --oneline -5', res));
 app.post('/api/git/pull', auth, (req, res) => gitCmd('pull --rebase', res));
 app.post('/api/git/push', auth, (req, res) => gitCmd('push origin HEAD', res));
 app.get('/api/git/diff', auth, (req, res) => gitCmd('diff | head -c 100000', res));
@@ -812,11 +921,42 @@ app.post('/api/gh/dispatch', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ============================================================================
+// ═══════════════════════════ SOCKET.IO ════════════════════════════════════
+// ============================================================================
 io.on('connection', socket => {
-  socket.emit('hello', { tunnel: state.tunnel, agents: state.agents.map(agentView) });
+  socket.emit('hello', { tunnel: state.tunnel, agents: state.agents.map(agentView), adminTerminal: ADMIN_OK });
+
+  socket.on('term:attach', ({ agentId, code }) => {
+    if (code !== CODE) return socket.emit('term:out', { agentId, data: '\r\n\x1b[31m[bad code]\x1b[0m\r\n' });
+    if (!agentById(agentId)) return socket.emit('term:out', { agentId, data: '\r\n\x1b[31m[unknown agent]\x1b[0m\r\n' });
+    socket.join(`term:${agentId}`);
+    const t = startTerminal(agentId);
+    if (t.buffer) socket.emit('term:out', { agentId, data: t.buffer });
+    socket.emit('term:ready', { agentId, admin: t.admin });
+  });
+
+  socket.on('term:in', ({ agentId, data, code }) => {
+    if (code !== CODE) return;
+    const t = terminals.get(agentId);
+    if (t && !t.proc.killed && t.proc.stdin.writable && data) t.proc.stdin.write(data);
+  });
+
+  socket.on('term:resize', ({ agentId, cols, rows, code }) => {
+    if (code !== CODE) return;
+    const t = terminals.get(agentId);
+    if (t && !t.proc.killed) {
+      try { t.proc.kill('SIGWINCH'); } catch {}
+    }
+  });
+
+  socket.on('term:kill', ({ agentId, code }) => {
+    if (code !== CODE) return;
+    killTerminal(agentId);
+  });
 });
 
 app.use(express.static(path.join(__dirname, '../public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../public', 'index.html')));
 
-server.listen(PORT, () => log(`Agent Ops Center v3 listening on :${PORT} (PAT=${!!PAT}, code set=${!!CODE})`));
+server.listen(PORT, () => log(`Agent Ops Center v4 listening on :${PORT} (PAT=${!!PAT}, admin=${ADMIN_OK})`));
