@@ -653,4 +653,73 @@ async function mfStatus(){ const r=await api('/api/mf/status'); $('mfOut').textC
 
 /* ═══════════ AGENTS ═══════════ */
 function renderAgents(){
-  const html=a=>`<div class="flex items-center gap-2 text-sm"><span class="w-2 h-2 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><b>${esc(a.name)}</b><span class="text-xs text-zinc-500">${esc(a.role)}</span>${a.id===
+  const html=a=>`<div class="flex items-center gap-2 text-sm"><span class="w-2 h-2 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><b>${esc(a.name)}</b><span class="text-xs text-zinc-500">${esc(a.role)}</span>${a.id===S.me?.id?'<span class="text-[9px] px-1 rounded bg-emerald-900">أنت</span>':''}</div>`;
+  $('agentFull').innerHTML=S.agents.map(html).join('')||'<p class="text-zinc-600">لا وكلاء</p>';
+  $('agentMini').innerHTML=S.agents.map(a=>`<div class="flex items-center gap-1.5 text-xs"><span class="w-1.5 h-1.5 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><span class="truncate">${esc(a.name)}</span></div>`).join('');
+}
+
+/* ═══════════ POLL ═══════════ */
+let polling=false;
+async function poll(){
+  if(polling||!S.me) return; polling=true;
+  try{
+    api(`/api/agents/${S.me.id}/ping`,{method:'POST',body:'{}'}).catch(()=>{});
+    const st=await api('/api/state');
+    S.channels=st.channels||S.channels; S.agents=st.agents||[]; S.tunnel=st.tunnel||'';
+    // Only seed messages once (pagination handles the rest)
+    if(!S.booted){ S.messages = st.messages || []; S.booted = true; renderMsgs(true); }
+    S.notifications=st.notifications||[];
+    renderChannels(); renderAgents();
+    $('tunnelChip').textContent='tunnel: '+(S.tunnel||'غير محدد');
+    $('hdrRepo').textContent=`${st.owner}/${st.repo} • PAT ${st.pat?'✓':'✗'}`;
+    $('adminChip').textContent = 'admin: '+(st.adminTerminal?'✅':'👤');
+    const h=await fetch('/api/health').then(r=>r.json()).catch(()=>null);
+    if(h){ $('healthDot').textContent='●';
+      $('footUp').textContent=`تشغيل ${Math.floor(h.uptimeSec/60)} د • ${h.messages||0} رسالة • ${(h.msgFileSize/1e6).toFixed(1)}MB`;
+      $('healthDot').className=`text-[10px] px-2 py-1 rounded ${h.ok?'bg-emerald-900 text-emerald-300':'bg-red-900'}`;
+    }
+  }catch(e){}
+  polling=false;
+}
+
+/* ═══════════ SOCKET ═══════════ */
+let sock=null;
+function connectSocket(){
+  try{
+    sock=io({transports:['websocket','polling']});
+    sock.on('message:new',m=>{
+      const i = S.messages.findIndex(x=>x.id===m.id);
+      if(i>=0) S.messages[i]=m; else S.messages.push(m);
+      if(m.channel===S.channel) renderMsgs(true);
+    });
+    sock.on('message:updated',m=>{
+      const i = S.messages.findIndex(x=>x.id===m.id);
+      if(i>=0) S.messages[i]=m; else S.messages.push(m);
+      if(m.channel===S.channel) renderMsgs(false);
+    });
+    sock.on('agents:update',a=>{ S.agents=a; renderAgents(); });
+    sock.on('pr:new',()=>{ if(S.tab==='prs') loadPRs(); });
+    sock.on('pr:updated',()=>{ if(S.tab==='prs') loadPRs(); });
+    sock.on('pr:comment',()=>{ if(S.tab==='prs') loadPRs(); });
+    sock.on('commit:new',()=>{ if(S.tab==='commits') loadCommits(); });
+    sock.on('term:out',({agentId,data})=>{ if(xterm && S.me && agentId===S.me.id) xterm.write(data); });
+    sock.on('term:ready',({agentId,admin})=>{
+      if(!S.me||agentId!==S.me.id) return;
+      $('termStatus').textContent='متصل'; $('termStatus').className='text-emerald-400';
+      $('termAdminBadge').textContent='admin: '+(admin?'✅ root':'👤 user');
+      $('termAdminBadge').className='text-[10px] px-2 py-0.5 rounded '+(admin?'bg-red-900 text-red-200':'bg-zinc-800 text-zinc-400');
+    });
+  }catch(e){ sock=null; }
+}
+
+function boot(){
+  if(!S.me) return;
+  $('meBadge').textContent=S.me.name;
+  setChan(S.channel);
+  poll(); setInterval(poll,4000);
+  connectSocket();
+}
+if(S.code&&S.me){ boot(); } else { showTab('setup'); if(S.code)$('setCode').value=S.code; }
+</script>
+</body>
+</html>
