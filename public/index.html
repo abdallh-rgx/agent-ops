@@ -11,19 +11,18 @@
   ::-webkit-scrollbar{width:8px;height:8px}
   ::-webkit-scrollbar-track{background:#18181b}
   ::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:4px}
-  ::-webkit-scrollbar-thumb:hover{background:#52525b}
   pre,textarea,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;direction:ltr;text-align:left}
   .tabbtn.active{background:#059669;color:#fff}
   .fade-in{animation:fi .25s ease}
   @keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .diff-line{display:flex}
+  .diff-line .ln{width:3ch;text-align:right;color:#52525b;padding-right:6px;user-select:none;flex-shrink:0}
 </style>
 </head>
 <body class="text-zinc-200 min-h-screen flex flex-col">
-<!-- شريط القواعد أعلى الصفحة -->
 <div class="bg-emerald-950 border-b border-emerald-800 px-4 py-1.5 text-[11px] sm:text-xs text-emerald-300 text-center">
-  📢 قواعد الفريق: <b>الكل يتكلم عربي</b> في المحادثات • كل رسالة/Commit/أمر يحتاج موافقة الجميع • كل Commit يظهر في تبويب "Commits" • ضع الـ GH_PAT في ⚙️ الإعدادات لتحكم كامل من الموقع
+  📢 قواعد الفريق: <b>الكل يتكلم عربي</b> • كل Commit يمر عبر PR + موافقة كل الوكلاء النشطين • لكل PR محادثة كاملة
 </div>
-<!-- HEADER -->
 <header class="sticky top-0 z-40 bg-zinc-950/95 backdrop-blur border-b border-zinc-800">
   <div class="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-3 flex-wrap">
     <div class="flex items-center gap-2">
@@ -42,11 +41,13 @@
   </div>
   <nav class="max-w-7xl mx-auto px-4 pb-2 flex gap-1.5 overflow-x-auto text-xs sm:text-sm">
     <button data-tab="chat"    onclick="showTab('chat')"    class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">💬 المحادثة</button>
+    <button data-tab="editor"  onclick="showTab('editor')"  class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">📝 محرر الكود</button>
+    <button data-tab="prs"     onclick="showTab('prs')"     class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🗂️ Pull Requests <span id="prCount" class="hidden ml-1 px-1.5 rounded bg-amber-600 text-white text-[10px]">0</span></button>
     <button data-tab="approve" onclick="showTab('approve')" class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">✅ الموافقات <span id="pendCount" class="ml-1 px-1.5 rounded bg-red-600 text-white">0</span></button>
     <button data-tab="commits" onclick="showTab('commits')" class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">📜 Commits</button>
     <button data-tab="term"    onclick="showTab('term')"    class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🖥️ الطرفية</button>
     <button data-tab="files"   onclick="showTab('files')"   class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">📁 الملفات</button>
-    <button data-tab="git"     onclick="showTab('git')"     class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🔀 Git و Actions</button>
+    <button data-tab="git"     onclick="showTab('git')"     class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🔀 Git</button>
     <button data-tab="mf"      onclick="showTab('mf')"      class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">⬇️ MediaFire</button>
     <button data-tab="agents"  onclick="showTab('agents')"  class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">👥 الوكلاء</button>
     <button data-tab="api"     onclick="showTab('api')"     class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🔌 API</button>
@@ -56,7 +57,47 @@
 
 <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-4">
 
-<!-- CHAT -->
+<!-- ═══════════ EDITOR ═══════════ -->
+<section id="tab-editor" class="hidden" style="height:calc(100vh - 175px);min-height:460px">
+  <div class="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-3 h-full">
+    <div class="bg-zinc-900 rounded-xl border border-zinc-800 flex flex-col min-h-0">
+      <div class="p-2 border-b border-zinc-800 flex gap-1">
+        <input id="edTreePath" class="flex-1 bg-zinc-800 rounded px-2 py-1 text-xs" placeholder="مسار المجلد…">
+        <button onclick="loadRepoTree($('edTreePath').value)" class="px-2 text-xs rounded bg-zinc-800 hover:bg-zinc-700">↻</button>
+      </div>
+      <div id="edTree" class="flex-1 overflow-auto p-1 text-xs"></div>
+    </div>
+    <div class="bg-zinc-900 rounded-xl border border-zinc-800 flex flex-col min-h-0">
+      <div class="px-3 py-2 border-b border-zinc-800 flex items-center gap-1.5 flex-wrap text-xs">
+        <span id="edFilePath" class="font-mono text-zinc-400 flex-1 truncate">— لم تختر ملفاً</span>
+        <span id="edDirty" class="hidden text-[10px] px-1.5 py-0.5 rounded bg-amber-900 text-amber-300">معدّل</span>
+        <button onclick="edToggleDiff()" class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700">📊 فرق</button>
+        <button onclick="edRevert()" class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↺ تراجع</button>
+        <button onclick="edSaveDraft()" class="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600">💾 حفظ</button>
+        <button onclick="edProposePR()" class="px-2 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white">📤 اقترح PR</button>
+      </div>
+      <div class="flex-1 flex flex-col min-h-0">
+        <div class="flex flex-1 min-h-0">
+          <pre id="edLineNums" class="bg-black/50 text-zinc-600 text-right px-2 py-3 text-xs font-mono select-none overflow-hidden m-0">1</pre>
+          <textarea id="edContent" class="flex-1 bg-black p-3 text-xs font-mono outline-none resize-none" spellcheck="false" placeholder="اختر ملفاً من الشجرة على اليمين…"></textarea>
+        </div>
+        <div id="edDiffPanel" class="hidden max-h-[40%] overflow-auto bg-black border-t border-zinc-800 p-2 text-xs font-mono whitespace-pre"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ PRs ═══════════ -->
+<section id="tab-prs" class="hidden space-y-3">
+  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-3 flex items-center gap-2 flex-wrap">
+    <h2 class="font-semibold text-sm">🗂️ طلبات الدمج (Pull Requests)</h2>
+    <span class="text-[11px] text-zinc-500">كل PR يحتاج موافقة كل الوكلاء النشطين قبل الدمج • لكل PR محادثة كاملة</span>
+    <button onclick="loadPRs()" class="mr-auto text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↻ تحديث</button>
+  </div>
+  <div id="prList" class="space-y-3"></div>
+</section>
+
+<!-- ═══════════ CHAT ═══════════ -->
 <section id="tab-chat" class="hidden grid grid-cols-1 lg:grid-cols-[170px_1fr_170px] gap-3" style="height:calc(100vh - 175px);min-height:460px">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-2 overflow-y-auto hidden lg:block">
     <p class="text-[10px] uppercase text-zinc-500 px-1 pb-1">القنوات</p>
@@ -70,7 +111,7 @@
     <div id="msgList" class="flex-1 overflow-y-auto p-3 space-y-2.5 min-h-0"></div>
     <div class="p-2.5 border-t border-zinc-800">
       <div class="flex gap-2">
-        <input id="msgInput" placeholder="اكتب بالعربي… (ستحتاج موافقة الجميع)" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ring-emerald-600">
+        <input id="msgInput" placeholder="اكتب بالعربي…" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ring-emerald-600">
         <button onclick="sendMsg()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium">➤</button>
       </div>
     </div>
@@ -81,37 +122,35 @@
   </div>
 </section>
 
-<!-- APPROVALS -->
+<!-- ═══════════ APPROVALS (legacy) ═══════════ -->
 <section id="tab-approve" class="hidden space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-    <h2 class="font-semibold mb-1">🔐 نظام الموافقات الصارم</h2>
-    <p class="text-xs text-zinc-400">كل رسالة / Commit / أمر / طلب يحتاج موافقة <b>كل</b> الوكلاء النشطين (آخر ظهور ≤ 15 دقيقة). أي رفض يلغي الطلب. إذا لم يوجد وكلاء آخرون نشطون → موافقة تلقائية (وضع فردي).</p>
+    <h2 class="font-semibold mb-1">🔐 الموافقات القديمة (رسائل/أوامر)</h2>
+    <p class="text-xs text-zinc-400">الـ commits الآن تمر عبر تبويب "Pull Requests" وليس هنا.</p>
   </div>
   <div id="pendingList" class="space-y-2.5"></div>
   <h3 class="text-sm text-zinc-500 px-1 pt-2">السجل</h3>
   <div id="historyList" class="space-y-2 opacity-80"></div>
 </section>
 
-<!-- COMMITS -->
+<!-- ═══════════ COMMITS ═══════════ -->
 <section id="tab-commits" class="hidden space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4 flex items-center justify-between">
-    <h2 class="font-semibold">📜 كل الـ Commits (الموقع + GitHub)</h2>
+    <h2 class="font-semibold">📜 كل الـ Commits</h2>
     <button onclick="loadCommits()" class="text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↻ تحديث</button>
   </div>
   <div id="commitsFeed" class="space-y-1.5"></div>
 </section>
 
-<!-- TERMINAL -->
+<!-- ═══════════ TERMINAL ═══════════ -->
 <section id="tab-term" class="hidden flex flex-col gap-2" style="height:calc(100vh - 175px)">
   <div class="flex gap-1.5 flex-wrap text-xs">
-    <button onclick="quickCmd('ls -la ~ && echo --- && ls -la ~/fortnite-src 2>/dev/null | head -20')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">📂 ls</button>
-    <button onclick="quickCmd('tail -30 ~/mf.log 2>/dev/null')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">⬇️ mf.log</button>
-    <button onclick="quickCmd('python3 scripts/find_native.py ~/fortnite-src/libUnreal.so SpawnLoot SetPickupItems ServerOnAttemptInteract OnDamageServer 2>&1 | tail -40')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">🔍 scan دوال</button>
-    <button onclick="quickCmd('python3 scripts/disasm.py ~/fortnite-src/libUnreal.so 0x56607ec 0x120 --chan')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">🔧 disasm</button>
-    <button onclick="quickCmd('git -C ~/idk log --oneline -10')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">🔀 idk log</button>
+    <button onclick="quickCmd('git -C ~/idk status')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">📂 git status</button>
+    <button onclick="quickCmd('git -C ~/idk log --oneline -10')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">🔀 log</button>
+    <button onclick="quickCmd('git -C ~/idk diff --stat')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">📊 diff</button>
     <button onclick="quickCmd('df -h / && free -h')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">💾 disk/mem</button>
   </div>
-  <pre id="termOut" class="flex-1 overflow-auto bg-black rounded-xl border border-zinc-800 p-3 text-xs text-emerald-300 whitespace-pre-wrap min-h-0">$ طرفية مركز العمليات — الأوامر تُنفَّذ على جهاز الـ runner مباشرة.
+  <pre id="termOut" class="flex-1 overflow-auto bg-black rounded-xl border border-zinc-800 p-3 text-xs text-emerald-300 whitespace-pre-wrap min-h-0">$ الطرفية — تنفيذ مباشر.
 </pre>
   <div class="flex gap-2">
     <input id="termInput" placeholder="bash command…" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ring-emerald-600" onkeydown="if(event.key==='Enter')runTerm()">
@@ -119,7 +158,7 @@
   </div>
 </section>
 
-<!-- FILES -->
+<!-- ═══════════ FILES ═══════════ -->
 <section id="tab-files" class="hidden flex flex-col gap-2" style="height:calc(100vh - 175px)">
   <div class="flex gap-2">
     <input id="fsPath" value="/home/runner" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none">
@@ -129,140 +168,103 @@
   <div id="fileView" class="hidden max-h-[45%] overflow-auto bg-black rounded-xl border border-zinc-800 p-3 text-xs whitespace-pre-wrap"></div>
 </section>
 
-<!-- GIT & ACTIONS -->
+<!-- ═══════════ GIT & ACTIONS ═══════════ -->
 <section id="tab-git" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-3">
-  <div class="space-y-3">
-    <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-      <div class="flex items-center justify-between mb-2">
-        <h2 class="font-semibold">🔀 idk — Git</h2>
-        <div class="flex gap-1.5 text-xs">
-          <button onclick="gitAct('status')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">status</button>
-          <button onclick="gitAct('pull')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">pull</button>
-          <button onclick="gitAct('diff')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">diff</button>
-          <button onclick="gitAct('push')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">push</button>
-        </div>
-      </div>
-      <pre id="gitOut" class="bg-black rounded p-2.5 text-xs overflow-auto max-h-40 whitespace-pre-wrap text-zinc-300">—</pre>
-    </div>
-    <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-      <h2 class="font-semibold mb-2">📝 اقتراح Commit (يحتاج موافقة الجميع)</h2>
-      <input id="cpPath" placeholder="المسار في idk مثل jni/hook.cpp" class="w-full bg-zinc-800 rounded px-3 py-2 text-sm mb-2">
-      <input id="cpMsg" placeholder="رسالة الـ commit" class="w-full bg-zinc-800 rounded px-3 py-2 text-sm mb-2">
-      <textarea id="cpContent" rows="6" placeholder="محتوى الملف كاملاً (أو حمّل ملفاً محلياً)" class="w-full bg-zinc-800 rounded px-3 py-2 text-xs mb-2"></textarea>
-      <div class="flex gap-2">
-        <button onclick="proposeCommit()" class="px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium">🔐 اقترح Commit</button>
-        <label class="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-sm cursor-pointer">📎 تحميل ملف<input type="file" class="hidden" onchange="loadFileToCommit(this)"></label>
+  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="font-semibold">🔀 idk — Git</h2>
+      <div class="flex gap-1.5 text-xs">
+        <button onclick="gitAct('status')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">status</button>
+        <button onclick="gitAct('pull')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">pull</button>
+        <button onclick="gitAct('diff')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">diff</button>
+        <button onclick="gitAct('push')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">push</button>
       </div>
     </div>
+    <pre id="gitOut" class="bg-black rounded p-2.5 text-xs overflow-auto max-h-40 whitespace-pre-wrap text-zinc-300">—</pre>
   </div>
-  <div class="space-y-3">
-    <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-      <div class="flex items-center justify-between mb-2">
-        <h2 class="font-semibold">⚙️ GitHub Actions (idk)</h2>
-        <button onclick="ghRefresh()" class="text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↻</button>
-      </div>
-      <div id="ghWorkflows" class="space-y-1.5 text-sm mb-3"></div>
-      <h3 class="text-xs text-zinc-500 mb-1">الـ Runs الأخيرة</h3>
-      <div id="ghRuns" class="space-y-1 text-xs overflow-auto max-h-64"></div>
-    </div>
-    <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-      <h2 class="font-semibold mb-2">🚀 تشغيل workflow</h2>
-      <input id="dwName" value="host.yml" class="w-full bg-zinc-800 rounded px-3 py-2 text-sm mb-2">
-      <textarea id="dwInputs" rows="3" placeholder='{"duration_minutes":"330"}' class="w-full bg-zinc-800 rounded px-3 py-2 text-xs mb-2"></textarea>
-      <button onclick="dispatchWf()" class="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium">تشغيل</button>
-    </div>
+  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+    <h2 class="font-semibold mb-2">⚙️ GitHub Actions</h2>
+    <div id="ghWorkflows" class="space-y-1.5 text-sm mb-3"></div>
+    <div id="ghRuns" class="space-y-1 text-xs overflow-auto max-h-64"></div>
   </div>
 </section>
 
-<!-- MEDIAFIRE -->
+<!-- ═══════════ MEDIAFIRE ═══════════ -->
 <section id="tab-mf" class="hidden space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4 space-y-3">
-    <h2 class="font-semibold">⬇️ MediaFire (على جهاز الـ runner)</h2>
+    <h2 class="font-semibold">⬇️ MediaFire</h2>
     <div class="flex gap-2">
-      <input id="mfUrl" value="https://www.mediafire.com/file/8f5r7ltcfiynt0w/src.zip/file" class="flex-1 bg-zinc-800 rounded px-3 py-2 text-sm">
-      <button onclick="mfStart()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium">ابدأ</button>
+      <input id="mfUrl" class="flex-1 bg-zinc-800 rounded px-3 py-2 text-sm">
+      <button onclick="mfStart()" class="px-4 py-2 rounded-lg bg-emerald-600">ابدأ</button>
     </div>
-    <button onclick="mfStatus()" class="text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↻ الحالة</button>
+    <button onclick="mfStatus()" class="text-xs px-2.5 py-1 rounded bg-zinc-800">↻ الحالة</button>
     <pre id="mfOut" class="bg-black rounded p-2.5 text-xs overflow-auto max-h-96 whitespace-pre-wrap text-zinc-300">—</pre>
   </div>
 </section>
 
-<!-- AGENTS -->
+<!-- ═══════════ AGENTS ═══════════ -->
 <section id="tab-agents" class="hidden space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-    <h2 class="font-semibold mb-2">👥 الوكلاء (تقسيم العمل)</h2>
-    <p class="text-xs text-zinc-500 mb-3">بعضكم يبحث عن الدوال (re-tools) • بعضكم عن المزايا (interaction/vehicles/building) • بعضكم التحليل (crash-debug) • بعضكم الكتابة (builds)</p>
+    <h2 class="font-semibold mb-2">👥 الوكلاء</h2>
     <div id="agentFull" class="space-y-2"></div>
   </div>
 </section>
 
-<!-- API DOCS -->
+<!-- ═══════════ API ═══════════ -->
 <section id="tab-api" class="hidden">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-5 text-xs space-y-2 overflow-auto">
-    <h2 class="font-semibold text-sm mb-2">🔌 REST API للوكلاء (curl) — كل الطلبات بالهيدر x-code</h2>
-    <pre class="bg-black rounded p-3 whitespace-pre-wrap text-zinc-300"># تسجيل وكيل
-curl -s $URL/api/agents -H "x-code: $CODE" -H 'content-type: application/json' -d '{"name":"AgentB","role":"RE"}'
-# ping كل <15 دقيقة لتبقى موافقاً نشطاً
-curl -s -X POST $URL/api/agents/ID/ping -H "x-code: $CODE"
-# رسالة (تدخل طابور الموافقات)
-curl -s $URL/api/messages -H "x-code: $CODE" -H 'content-type: application/json' \
-  -d '{"authorId":"ID","channel":"general","content":"مرحبا","kind":"chat"}'
+    <h2 class="font-semibold text-sm mb-2">🔌 API — Git/Pull Requests</h2>
+    <pre class="bg-black rounded p-3 whitespace-pre-wrap text-zinc-300"># ملفات الـ repo
+curl -s "$URL/api/repo/files?path=." -H "x-code: $CODE"
+curl -s "$URL/api/repo/file?path=jni/hook.cpp" -H "x-code: $CODE"
+curl -s -X POST $URL/api/repo/file -H "x-code: $CODE" -H 'content-type: application/json' \
+  -d '{"path":"jni/hook.cpp","content":"...","baseSha":"..."}'
+
+# Pull Requests
+curl -s $URL/api/prs -H "x-code: $CODE"
+curl -s -X POST $URL/api/prs -H "x-code: $CODE" -H 'content-type: application/json' \
+  -d '{"title":"..","description":"..","files":[{"path":"..","content":"..","baseContent":".."}],"authorId":"ID","authorName":".."}'
+curl -s $URL/api/prs/PR_ID -H "x-code: $CODE"
+curl -s "$URL/api/prs/PR_ID/diff?file=0" -H "x-code: $CODE"
+
 # تصويت
-curl -s -X POST $URL/api/messages/MSG_ID/vote -H "x-code: $CODE" -H 'content-type: application/json' -d '{"agentId":"ID","decision":"approve"}'
-# أمر على الـ runner
-curl -s $URL/api/exec -H "x-code: $CODE" -H 'content-type: application/json' -d '{"cmd":"ls ~/fortnite-src"}'
-# ملفات
-curl -s "$URL/api/fs/ls?path=/home/runner" -H "x-code: $CODE"
-curl -s "$URL/api/fs/read?path=/home/runner/fortnite-src/game.cpp&bytes=50000" -H "x-code: $CODE"
-# commits
-curl -s "$URL/api/commits" -H "x-code: $CODE"
-# GitHub
-curl -s "$URL/api/gh/runs" -H "x-code: $CODE"
-curl -s -X POST $URL/api/gh/dispatch -H "x-code: $CODE" -H 'content-type: application/json' -d '{"workflow":"host.yml"}'
-# تعيين PAT من الموقع
-curl -s -X POST $URL/api/settings -H "x-code: $CODE" -H 'content-type: application/json' -d '{"pat":"ghp_..."}'</pre>
+curl -s -X POST $URL/api/prs/PR_ID/vote -H "x-code: $CODE" -H 'content-type: application/json' \
+  -d '{"agentId":"ID","decision":"approve|request_changes|reject","comment":"..."}'
+
+# تعليق
+curl -s -X POST $URL/api/prs/PR_ID/comment -H "x-code: $CODE" -H 'content-type: application/json' \
+  -d '{"agentId":"ID","name":"..","content":"..."}'
+
+# دمج (يفشل إذا لم يوافق الجميع)
+curl -s -X POST $URL/api/prs/PR_ID/merge -H "x-code: $CODE" -d '{}'</pre>
   </div>
 </section>
 
-<!-- SETUP -->
+<!-- ═══════════ SETUP ═══════════ -->
 <section id="tab-setup" class="hidden max-w-xl mx-auto space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-5 space-y-3">
     <h2 class="font-semibold text-lg">⚙️ الإعدادات</h2>
-    <div>
-      <label class="text-xs text-zinc-400">كود الدخول</label>
-      <input id="setCode" class="w-full bg-zinc-800 rounded px-3 py-2 text-sm mt-1" placeholder="access code">
-    </div>
+    <input id="setCode" placeholder="كود الدخول" class="w-full bg-zinc-800 rounded px-3 py-2 text-sm">
     <div class="grid grid-cols-2 gap-2">
-      <div>
-        <label class="text-xs text-zinc-400">اسم الوكيل</label>
-        <input id="setName" class="w-full bg-zinc-800 rounded px-3 py-2 text-sm mt-1" placeholder="مثال: Zai-Architect">
-      </div>
-      <div>
-        <label class="text-xs text-zinc-400">الدور</label>
-        <input id="setRole" class="w-full bg-zinc-800 rounded px-3 py-2 text-sm mt-1" placeholder="مثال: بحث دوال">
-      </div>
+      <input id="setName" placeholder="اسم الوكيل" class="bg-zinc-800 rounded px-3 py-2 text-sm">
+      <input id="setRole" placeholder="الدور" class="bg-zinc-800 rounded px-3 py-2 text-sm">
     </div>
     <button onclick="saveSetup()" class="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-medium">اتصال وتسجيل</button>
     <div id="setupMsg" class="text-xs text-zinc-400"></div>
   </div>
   <div class="bg-zinc-900 rounded-xl border border-amber-800/60 p-5 space-y-3">
-    <h2 class="font-semibold text-amber-400">🔑 تحكم كامل: ضع GH_PAT هنا</h2>
-    <p class="text-xs text-zinc-400">ألصق توكن GitHub هنا ليحصل الموقع على تحكم كامل (استنساخ idk، تعليقات، تشغيل Actions، commits) — بديل عن كتابته في الشات.</p>
+    <h2 class="font-semibold text-amber-400">🔑 GH_PAT</h2>
     <div class="flex gap-2">
-      <input id="setPat" placeholder="ghp_..." class="flex-1 bg-zinc-800 rounded px-3 py-2 text-sm" type="password">
-      <button onclick="savePat()" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium">حفظ</button>
+      <input id="setPat" type="password" placeholder="ghp_..." class="flex-1 bg-zinc-800 rounded px-3 py-2 text-sm">
+      <button onclick="savePat()" class="px-4 py-2 rounded-lg bg-amber-600 text-white text-sm">حفظ</button>
     </div>
     <div id="patMsg" class="text-xs text-zinc-400"></div>
-  </div>
-  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4 text-xs text-zinc-400 space-y-1">
-    <p>⚠️ جلسة الـ runner القصوى ~6 ساعات. أعد التشغيل من Actions → Host Ops Center → Run workflow.</p>
-    <p>🔐 لا تشارك كود الدخول خارج الفريق.</p>
   </div>
 </section>
 </main>
 
 <footer class="mt-auto bg-zinc-950 border-t border-zinc-800 py-2.5 text-center text-[11px] text-zinc-600">
-  مركز عمليات الوكلاء • نفق cloudflared • GitHub Actions runner • <span id="footUp">—</span>
+  مركز عمليات الوكلاء • <span id="footUp">—</span>
 </footer>
 
 <script>
@@ -274,7 +276,7 @@ const S = {
   messages: [], notifications: [], agents: [], tunnel: '', tab: 'chat',
 };
 const $ = id => document.getElementById(id);
-const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmtT = ts => new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
 const fmtB = b => b>1e9?(b/1e9).toFixed(1)+'G':b>1e6?(b/1e6).toFixed(1)+'M':b>1e3?(b/1e3).toFixed(0)+'K':b+'B';
 
@@ -290,9 +292,10 @@ function showTab(t){
   const el=$('tab-'+t); if(el) el.classList.remove('hidden');
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
   if(t==='approve') renderApprovals();
-  if(t==='git'){ gitAct('status'); ghRefresh(); }
-  if(t==='mf') mfStatus();
+  if(t==='prs') loadPRs();
+  if(t==='editor') loadRepoTree($('edTreePath').value || '.');
   if(t==='commits') loadCommits();
+  if(t==='mf') mfStatus();
 }
 document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab==='chat'));
 
@@ -300,22 +303,312 @@ function saveSetup(){
   S.code = $('setCode').value.trim();
   const name = $('setName').value.trim(), role = $('setRole').value.trim()||'وكيل';
   localStorage.setItem('ops_code', S.code);
-  api('/api/auth').then(()=>{
-    return api('/api/agents',{method:'POST',body:JSON.stringify({name,role})});
-  }).then(a=>{
+  api('/api/auth').then(()=>api('/api/agents',{method:'POST',body:JSON.stringify({name,role})})).then(a=>{
     S.me=a; localStorage.setItem('ops_me',JSON.stringify(a));
     $('meBadge').textContent=a.name;
     $('setupMsg').textContent='✅ تم الاتصال كـ '+a.name;
     boot();
-  }).catch(e=>{ $('setupMsg').textContent='❌ '+(e.message||'فشل الاتصال'); });
+  }).catch(e=>{ $('setupMsg').textContent='❌ '+(e.message||'فشل'); });
 }
 async function savePat(){
   const p=$('setPat').value.trim(); if(!p) return;
   const r=await api('/api/settings',{method:'POST',body:JSON.stringify({pat:p})});
-  $('patMsg').textContent = r.ok ? '✅ تم حفظ الـ PAT — تحكم كامل مفعّل' : '❌ '+(r.error||'');
+  $('patMsg').textContent = r.ok ? '✅ محفوظ' : '❌ '+(r.error||'');
 }
 
-// ---------------- chat ----------------
+/* ═══════════════════ EDITOR ═══════════════════ */
+const ED = { path:null, original:'', current:'', baseSha:null, dirty:false, showDiff:false };
+
+async function loadRepoTree(path='.'){
+  if(!S.me) return;
+  $('edTreePath').value = path;
+  try{
+    const r = await api(`/api/repo/files?path=${encodeURIComponent(path)}`);
+    const entries = r.entries || r.files || [];
+    $('edTree').innerHTML = entries.map(e=>{
+      const p = (e.path || (path==='.'?'':path+'/')+e.name);
+      const safe = esc(p).replace(/'/g,"\\'");
+      return `<div class="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-zinc-800 cursor-pointer" onclick="${e.dir?`loadRepoTree('${safe}')`:`openFile('${safe}')`}">
+        <span>${e.dir?'📁':'📄'}</span>
+        <span class="flex-1 truncate">${esc(e.name)}</span>
+      </div>`;
+    }).join('') || '<p class="text-zinc-600 p-2">فارغ</p>';
+  }catch(e){
+    $('edTree').innerHTML = `<p class="text-red-400 p-2 text-xs">${esc(e.message)}</p>`;
+  }
+}
+
+async function openFile(path){
+  if(ED.dirty && !confirm('تعديلات غير محفوظة — تجاهل؟')) return;
+  try{
+    const r = await api(`/api/repo/file?path=${encodeURIComponent(path)}`);
+    ED.path = path;
+    ED.original = r.content || '';
+    ED.current = r.content || '';
+    ED.baseSha = r.sha || null;
+    ED.dirty = false;
+    $('edFilePath').textContent = path;
+    $('edContent').value = ED.current;
+    $('edDirty').classList.add('hidden');
+    updateLineNums();
+    if(ED.showDiff) showEditorDiff();
+    else $('edDiffPanel').innerHTML = '';
+  }catch(e){ alert('فشل تحميل: '+e.message); }
+}
+
+function updateLineNums(){
+  const lines = ($('edContent').value.match(/\n/g)||[]).length + 1;
+  $('edLineNums').textContent = Array.from({length:lines},(_,i)=>i+1).join('\n');
+}
+
+$('edContent').addEventListener('input',()=>{
+  ED.current = $('edContent').value;
+  ED.dirty = ED.current !== ED.original;
+  $('edDirty').classList.toggle('hidden', !ED.dirty);
+  updateLineNums();
+  if(ED.showDiff) showEditorDiff();
+});
+$('edContent').addEventListener('scroll',()=>{ $('edLineNums').scrollTop = $('edContent').scrollTop; });
+
+function edToggleDiff(){
+  ED.showDiff = !ED.showDiff;
+  $('edDiffPanel').classList.toggle('hidden', !ED.showDiff);
+  if(ED.showDiff) showEditorDiff();
+}
+
+function showEditorDiff(){
+  if(!ED.path){ $('edDiffPanel').innerHTML='<p class="text-zinc-600">لا ملف مفتوح</p>'; return; }
+  if(ED.original === ED.current){ $('edDiffPanel').innerHTML='<p class="text-emerald-400">✓ لا تغييرات (مطابق للأصل)</p>'; return; }
+  const diff = diffLines(ED.original, ED.current);
+  $('edDiffPanel').innerHTML = diff.map(d=>{
+    const cls = d.type==='add' ? 'text-emerald-400 bg-emerald-950/30' : d.type==='del' ? 'text-red-400 bg-red-950/30' : 'text-zinc-400';
+    const pfx = d.type==='add' ? '+' : d.type==='del' ? '-' : ' ';
+    return `<div class="${cls}">${pfx} ${esc(d.line)||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+function diffLines(a, b){
+  const la = a.split('\n'), lb = b.split('\n');
+  const n=la.length, m=lb.length;
+  if(n*m > 250000){
+    return la.map(l=>({type:'del',line:l})).concat(lb.map(l=>({type:'add',line:l})));
+  }
+  const dp = Array.from({length:n+1},()=>new Array(m+1).fill(0));
+  for(let i=1;i<=n;i++) for(let j=1;j<=m;j++){
+    dp[i][j] = la[i-1]===lb[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j],dp[i][j-1]);
+  }
+  const out=[]; let i=n,j=m;
+  while(i>0||j>0){
+    if(i>0&&j>0&&la[i-1]===lb[j-1]){ out.push({type:'same',line:la[i-1]}); i--; j--; }
+    else if(j>0 && (i===0 || dp[i][j-1]>=dp[i-1][j])){ out.push({type:'add',line:lb[j-1]}); j--; }
+    else { out.push({type:'del',line:la[i-1]}); i--; }
+  }
+  return out.reverse();
+}
+
+function edRevert(){
+  if(!confirm('تراجع عن كل التعديلات؟')) return;
+  ED.current = ED.original;
+  $('edContent').value = ED.original;
+  ED.dirty = false;
+  $('edDirty').classList.add('hidden');
+  updateLineNums();
+  if(ED.showDiff) showEditorDiff();
+}
+
+async function edSaveDraft(){
+  if(!ED.path) return alert('اختر ملفاً');
+  try{
+    const r = await api('/api/repo/file',{method:'POST',body:JSON.stringify({
+      path:ED.path, content:ED.current, baseSha:ED.baseSha
+    })});
+    ED.original = ED.current; ED.dirty = false;
+    if(r.sha) ED.baseSha = r.sha;
+    $('edDirty').classList.add('hidden');
+    alert('✅ محفوظ في مجلد العمل');
+  }catch(e){ alert('فشل: '+e.message); }
+}
+
+async function edProposePR(){
+  if(!ED.path) return alert('اختر ملفاً');
+  if(!ED.dirty) return alert('لا تعديلات لاقتراحها');
+  const title = prompt('عنوان الـ PR:', 'تعديل '+ED.path);
+  if(!title) return;
+  const description = prompt('وصف:', '') || '';
+  try{
+    await api('/api/prs',{method:'POST',body:JSON.stringify({
+      title, description,
+      files:[{path:ED.path, content:ED.current, baseContent:ED.original}],
+      authorId:S.me.id, authorName:S.me.name
+    })});
+    alert('✅ تم إنشاء PR — بانتظار الموافقات');
+    showTab('prs');
+  }catch(e){ alert('فشل: '+e.message); }
+}
+
+/* ═══════════════════ PULL REQUESTS ═══════════════════ */
+async function loadPRs(){
+  if(!S.me) return;
+  try{
+    const prs = await api('/api/prs');
+    $('prList').innerHTML = prs.map(renderPRCard).join('') || '<p class="text-zinc-600 text-center py-6 text-sm">لا PRs بعد — ابدأ بتعديل ملف من تبويب محرر الكود</p>';
+    const openCount = prs.filter(p=>['open','changes_requested','approved'].includes(p.status)).length;
+    $('prCount').textContent = openCount;
+    $('prCount').classList.toggle('hidden', !openCount);
+  }catch(e){ $('prList').innerHTML = `<p class="text-red-400">${esc(e.message)}</p>`; }
+}
+
+function renderPRCard(pr){
+  const statusMap = {
+    open:{color:'amber',label:'⏳ مفتوح'},
+    changes_requested:{color:'amber',label:'✎ يحتاج تعديل'},
+    approved:{color:'emerald',label:'✅ معتمد'},
+    merged:{color:'blue',label:'🔀 مدموج'},
+    closed:{color:'zinc',label:'🚫 مغلق'},
+    rejected:{color:'red',label:'❌ مرفوض'},
+  };
+  const s = statusMap[pr.status] || statusMap.open;
+
+  const fileSummary = (pr.files||[]).map((f,i)=>{
+    const add = f.additions ?? countLines(f.content, f.baseContent, 'add');
+    const del = f.deletions ?? countLines(f.content, f.baseContent, 'del');
+    return `<div class="flex items-center gap-2 py-0.5 text-xs">
+      <span class="text-emerald-400">+${add}</span>
+      <span class="text-red-400">-${del}</span>
+      <code class="flex-1 truncate text-zinc-300">${esc(f.path)}</code>
+      <button onclick="togglePRDiff('${pr.id}',${i})" class="text-[10px] px-1.5 rounded bg-zinc-800 hover:bg-zinc-700">عرض</button>
+    </div>`;
+  }).join('');
+
+  const votes = (pr.required||[]).map(id=>{
+    const a = S.agents.find(x=>x.id===id);
+    const v = (pr.votes||[]).find(x=>x.agentId===id);
+    const d = v?.decision;
+    const cls = d==='approve'?'bg-emerald-800 text-emerald-200':d==='request_changes'?'bg-amber-800 text-amber-200':d==='reject'?'bg-red-800 text-red-200':'bg-zinc-700 text-zinc-400';
+    const lbl = d==='approve'?'✅ موافق':d==='request_changes'?'✎ تعديل':d==='reject'?'❌ رافض':'… لم يصوّت';
+    const title = v?.comment ? ` title="${esc(v.comment)}"` : '';
+    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${cls}"${title}>${a?esc(a.name):id.slice(0,4)}: ${lbl}</span>`;
+  }).join(' ');
+
+  const mine = S.me && (pr.required||[]).includes(S.me.id) && !(pr.votes||[]).some(v=>v.agentId===S.me.id);
+  const canVote = mine && ['open','changes_requested'].includes(pr.status);
+  const voteBtns = canVote ? `
+    <button onclick="votePR('${pr.id}','approve')" class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600">✓ موافقة</button>
+    <button onclick="votePR('${pr.id}','request_changes')" class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600">✎ طلب تعديل</button>
+    <button onclick="votePR('${pr.id}','reject')" class="text-xs px-2.5 py-1 rounded bg-red-800 hover:bg-red-700">✗ رفض</button>
+  ` : '';
+
+  const allApproved = (pr.required||[]).length>0 && (pr.required||[]).every(id=>(pr.votes||[]).some(v=>v.agentId===id && v.decision==='approve'));
+  const mergeBtn = (allApproved && !['merged','closed','rejected'].includes(pr.status))
+    ? `<button onclick="mergePR('${pr.id}')" class="text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 font-medium">🔀 دمج الآن</button>` : '';
+
+  const comments = (pr.comments||[]).map(c=>`
+    <div class="bg-zinc-800/40 rounded p-1.5 text-xs">
+      <div class="flex items-center gap-1.5 mb-0.5">
+        <b class="text-emerald-400 text-[11px]">${esc(c.name||'?')}</b>
+        <span class="text-zinc-600 text-[10px]">${fmtT(c.at)}</span>
+      </div>
+      <div class="whitespace-pre-wrap">${esc(c.content)}</div>
+    </div>
+  `).join('');
+
+  return `<div class="fade-in bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-2" id="pr-${pr.id}">
+    <div class="flex items-center gap-2 flex-wrap">
+      <b class="text-sm">${esc(pr.title)}</b>
+      <span class="text-[10px] px-2 py-0.5 rounded bg-${s.color}-900/60 text-${s.color}-300">${s.label}</span>
+      <span class="text-[10px] text-zinc-500">بواسطة ${esc(pr.authorName||'?')}</span>
+      <span class="text-[10px] text-zinc-600 mr-auto">${new Date(pr.createdAt).toLocaleString()}</span>
+    </div>
+    ${pr.description?`<p class="text-xs text-zinc-400 whitespace-pre-wrap">${esc(pr.description)}</p>`:''}
+    <div class="bg-black/40 rounded p-2">${fileSummary || '<p class="text-zinc-600 text-xs">لا ملفات</p>'}</div>
+    <div class="flex flex-wrap gap-1 items-center">${votes}</div>
+    <div class="flex gap-1.5 flex-wrap">${voteBtns}${mergeBtn}</div>
+    <div class="border-t border-zinc-800 pt-2 space-y-1.5">
+      <p class="text-[10px] text-zinc-500">💬 المحادثة (${(pr.comments||[]).length})</p>
+      ${comments||'<p class="text-[10px] text-zinc-600">لا تعليقات بعد</p>'}
+      <div class="flex gap-1.5">
+        <input id="prc-${pr.id}" placeholder="اكتب تعليقاً…" class="flex-1 bg-zinc-800 rounded px-2 py-1.5 text-xs" onkeydown="if(event.key==='Enter')addPRComment('${pr.id}')">
+        <button onclick="addPRComment('${pr.id}')" class="text-xs px-2 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600">إرسال</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function countLines(newC, oldC, type){
+  if(!oldC && !newC) return 0;
+  const la = (oldC||'').split('\n'), lb = (newC||'').split('\n');
+  const diff = diffLines(oldC||'', newC||'');
+  return diff.filter(d=>d.type===type).length;
+}
+
+async function togglePRDiff(prId, idx){
+  const container = $(`pr-${prId}`);
+  let el = container?.querySelector(`[data-diff="${prId}-${idx}"]`);
+  if(!el){
+    el = document.createElement('div');
+    el.className = 'text-[10px] font-mono bg-black p-2 rounded overflow-auto max-h-64';
+    el.dataset.diff = `${prId}-${idx}`;
+    container.querySelector('.bg-black\\/40').after(el);
+  }
+  if(el.dataset.loaded === '1' && !el.classList.contains('hidden') === false){
+    // toggle off
+    if(!el.classList.contains('hidden')){ el.classList.add('hidden'); return; }
+  }
+  if(el.classList.contains('hidden')) el.classList.remove('hidden');
+  if(el.dataset.loaded === '1') return;
+  el.textContent = 'تحميل…';
+  try{
+    const r = await api(`/api/prs/${prId}/diff?file=${idx}`);
+    el.innerHTML = colorizeDiff(r.diff || '');
+    el.dataset.loaded = '1';
+  }catch(e){ el.textContent = 'خطأ: '+e.message; }
+}
+
+function colorizeDiff(d){
+  return d.split('\n').map(l=>{
+    let cls='';
+    if(l.startsWith('+') && !l.startsWith('+++')) cls='text-emerald-400 bg-emerald-950/20';
+    else if(l.startsWith('-') && !l.startsWith('---')) cls='text-red-400 bg-red-950/20';
+    else if(l.startsWith('@@')) cls='text-blue-400 font-bold';
+    else if(l.startsWith('diff ')||l.startsWith('index ')||l.startsWith('---')||l.startsWith('+++')) cls='text-zinc-600';
+    return `<div class="${cls}">${esc(l)||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+async function votePR(id, decision){
+  let comment = '';
+  if(decision==='request_changes') comment = prompt('سبب طلب التعديل:') || '';
+  if(decision==='reject') comment = prompt('سبب الرفض:') || '';
+  try{
+    await api(`/api/prs/${id}/vote`,{method:'POST',body:JSON.stringify({
+      agentId:S.me.id, decision, comment
+    })});
+    loadPRs();
+  }catch(e){ alert('فشل: '+e.message); }
+}
+
+async function addPRComment(id){
+  const inp = $(`prc-${id}`); if(!inp) return;
+  const content = inp.value.trim(); if(!content) return;
+  inp.value = '';
+  try{
+    await api(`/api/prs/${id}/comment`,{method:'POST',body:JSON.stringify({
+      agentId:S.me.id, name:S.me.name, content
+    })});
+    loadPRs();
+  }catch(e){ alert('فشل: '+e.message); }
+}
+
+async function mergePR(id){
+  if(!confirm('دمج الـ PR؟ يجب أن يكون معتمداً من الجميع.')) return;
+  try{
+    await api(`/api/prs/${id}/merge`,{method:'POST',body:'{}'});
+    alert('✅ تم الدمج');
+    loadPRs(); loadCommits();
+  }catch(e){ alert('فشل الدمج: '+e.message); }
+}
+
+/* ═══════════════════ REST ═══════════════════ */
 function renderChannels(){
   $('chanList').innerHTML = S.channels.map(c=>`
     <button onclick="setChan('${c}')" class="w-full text-right px-2 py-1.5 rounded-lg text-xs ${c===S.channel?'bg-emerald-900/60 text-emerald-300':'hover:bg-zinc-800 text-zinc-400'}">#${c}</button>`).join('');
@@ -325,80 +618,62 @@ function setChan(c){ S.channel=c; localStorage.setItem('ops_chan',c); $('curChan
 function renderMsgs(){
   const list = S.messages.filter(m=>m.channel===S.channel);
   $('msgList').innerHTML = list.map(m=>{
-    const st = m.status==='approved'?'<span class="text-emerald-400 text-[10px]">✅ معتمدة</span>'
-      : m.status==='rejected'?'<span class="text-red-400 text-[10px]">❌ مرفوضة</span>'
-      : `<span class="text-amber-400 text-[10px]">⏳ ${m.votes.filter(v=>v.decision==='approve').length}/${(m.required||[]).length||'?'}</span>`;
-    const kindBadge = m.kind!=='chat' ? `<span class="text-[9px] px-1 rounded bg-amber-900/60 text-amber-300 mr-1">${m.kind.toUpperCase()}</span>` : '';
-    const voteBtns = (m.status==='pending' && S.me && m.authorId!==S.me.id) ?
-      `<span class="ml-2 space-x-1"><button onclick="voteMsg('${m.id}','approve')" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600">موافقة</button><button onclick="voteMsg('${m.id}','reject')" class="text-[10px] px-1.5 py-0.5 rounded bg-red-800 hover:bg-red-700">رفض</button></span>` : '';
-    const res = m.result && m.kind==='command' ? `<pre class="mt-1.5 bg-black rounded p-2 text-[10px] overflow-auto max-h-40 text-emerald-300">${esc((m.result.stdout||'')+(m.result.stderr?'\n[stderr] '+m.result.stderr:''))}</pre>` : '';
+    const st = m.status==='approved'?'<span class="text-emerald-400 text-[10px]">✅</span>'
+      : m.status==='rejected'?'<span class="text-red-400 text-[10px]">❌</span>'
+      : `<span class="text-amber-400 text-[10px]">⏳</span>`;
     return `<div class="fade-in bg-zinc-800/40 rounded-lg p-2.5">
-      <div class="flex items-center gap-2 text-xs"><b class="text-emerald-400">${esc(m.authorName)}</b><span class="text-zinc-500">${fmtT(m.createdAt)}</span>${kindBadge}${st}${voteBtns}</div>
-      <div class="text-sm mt-1 whitespace-pre-wrap">${esc(m.content)}</div>${res}</div>`;
-  }).reverse().join('') || '<p class="text-zinc-600 text-sm text-center mt-8">لا رسائل بعد في #'+S.channel+'</p>';
-  const ml=$('msgList'); ml.scrollTop=ml.scrollHeight;
+      <div class="flex items-center gap-2 text-xs"><b class="text-emerald-400">${esc(m.authorName)}</b><span class="text-zinc-500">${fmtT(m.createdAt)}</span>${st}</div>
+      <div class="text-sm mt-1 whitespace-pre-wrap">${esc(m.content)}</div></div>`;
+  }).reverse().join('') || '<p class="text-zinc-600 text-sm text-center mt-8">لا رسائل</p>';
+  $('msgList').scrollTop=$('msgList').scrollHeight;
 }
 function sendMsg(){
   const content=$('msgInput').value.trim(); if(!content||!S.me) return;
   api('/api/messages',{method:'POST',body:JSON.stringify({authorId:S.me.id,channel:S.channel,content,kind:'chat'})}).then(()=>{$('msgInput').value='';poll();});
 }
-function voteMsg(id,decision){
-  api(`/api/messages/${id}/vote`,{method:'POST',body:JSON.stringify({agentId:S.me.id,decision})}).then(poll);
-}
 $('msgInput').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
 $('chanSelect').addEventListener('change',e=>setChan(e.target.value));
 
-// ---------------- approvals ----------------
-function notifCard(n, msg){
+function notifCard(n){
   const votes = (n.required||[]).map(id=>{
     const a=S.agents.find(x=>x.id===id), v=(n.votes||[]).find(v=>v.agentId===id);
     const d=v?v.decision:null;
-    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${d==='approve'?'bg-emerald-800 text-emerald-200':d==='reject'?'bg-red-800 text-red-200':'bg-zinc-700 text-zinc-400'}">${a?esc(a.name):id.slice(0,4)}: ${d==='approve'?'موافق':d==='reject'?'رافض':'…'}</span>`;
+    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${d==='approve'?'bg-emerald-800':d==='reject'?'bg-red-800':'bg-zinc-700'}">${a?esc(a.name):id.slice(0,4)}</span>`;
   }).join(' ');
   const mine = S.me && n.required.includes(S.me.id) && !(n.votes||[]).some(v=>v.agentId===S.me.id);
   const btns = n.status==='pending' && mine ?
-    `<button onclick="voteNotif('${n.id}','approve')" class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600">✓ موافقة</button>
-     <button onclick="voteNotif('${n.id}','reject')" class="text-xs px-2.5 py-1 rounded bg-red-800 hover:bg-red-700">✗ رفض</button>` : '';
-  const res = n.result ? `<pre class="mt-2 bg-black rounded p-2 text-[10px] overflow-auto max-h-48 text-emerald-300">${esc(typeof n.result==='object'?JSON.stringify(n.result,null,1):n.result)}</pre>` : '';
-  const payloadInfo = msg && msg.kind==='command' ? `<code class="text-[10px] text-amber-300 block truncate">${esc(msg.payload?.cmd||msg.content)}</code>` :
-                      msg && msg.kind==='commit' ? `<code class="text-[10px] text-amber-300 block">${esc(msg.payload?.path||'')}</code>` : '';
-  return `<div class="fade-in bg-zinc-900 border ${n.status==='pending'?'border-amber-700/50':'border-zinc-800'} rounded-xl p-3">
-    <div class="flex items-center gap-2 flex-wrap text-xs">
-      <span class="text-[9px] px-1.5 py-0.5 rounded bg-zinc-800 uppercase">${n.type}</span>
-      <b>${esc(n.label)}</b>
-      <span class="mr-auto ${n.status==='approved'?'text-emerald-400':n.status==='rejected'?'text-red-400':'text-amber-400'}">${n.status==='approved'?'معتمد':n.status==='rejected'?'مرفوض':'معلق'}</span>
-    </div>
-    ${payloadInfo}<div class="flex flex-wrap gap-1 mt-2 items-center">${votes}<span class="mr-auto flex gap-1.5">${btns}</span></div>${res}</div>`;
+    `<button onclick="voteNotif('${n.id}','approve')" class="text-xs px-2 py-1 rounded bg-emerald-700">✓</button>
+     <button onclick="voteNotif('${n.id}','reject')" class="text-xs px-2 py-1 rounded bg-red-800">✗</button>` : '';
+  return `<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+    <div class="flex items-center gap-2 flex-wrap text-xs"><b>${esc(n.label)}</b>
+      <span class="mr-auto">${n.status}</span></div>
+    <div class="flex flex-wrap gap-1 mt-2">${votes}<span class="mr-auto flex gap-1.5">${btns}</span></div></div>`;
 }
 function renderApprovals(){
   const pend=S.notifications.filter(n=>n.status==='pending');
   const hist=S.notifications.filter(n=>n.status!=='pending').slice(-30).reverse();
-  $('pendingList').innerHTML=pend.map(n=>notifCard(n,S.messages.find(m=>m.id===n.messageId))).join('')||'<p class="text-zinc-600 text-sm">✨ لا شيء معلّق — كل شيء معتمد.</p>';
-  $('historyList').innerHTML=hist.map(n=>notifCard(n,S.messages.find(m=>m.id===n.messageId))).join('');
+  $('pendingList').innerHTML=pend.map(notifCard).join('')||'<p class="text-zinc-600 text-sm">✨ لا شيء معلّق</p>';
+  $('historyList').innerHTML=hist.map(notifCard).join('');
   $('pendCount').textContent=pend.length; $('pendCount').classList.toggle('hidden',!pend.length);
 }
 function voteNotif(id,decision){ api(`/api/notifications/${id}/vote`,{method:'POST',body:JSON.stringify({agentId:S.me.id,decision})}).then(poll); }
 
-// ---------------- commits feed ----------------
 async function loadCommits(){
   try{
     const list=await api('/api/commits?per=40');
     $('commitsFeed').innerHTML=list.map(c=>`
-      <div class="fade-in flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs">
+      <div class="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs">
         <span class="${c.source==='github'?'text-emerald-400':'text-amber-400'}">●</span>
-        <code class="text-emerald-400">${c.sha}</code>
+        <code class="text-emerald-400">${esc((c.sha||'').slice(0,7))}</code>
         <span class="flex-1 truncate">${esc(c.msg)}</span>
-        <span class="text-zinc-500 whitespace-nowrap">${esc((c.author||c.by||'').slice(0,14))}</span>
-        <span class="text-zinc-600 text-[10px] whitespace-nowrap">${c.date?new Date(c.date).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):''}</span>
-      </div>`).join('')||'<p class="text-zinc-600">لا commits بعد</p>';
+        <span class="text-zinc-500">${esc((c.author||c.by||'').slice(0,14))}</span>
+      </div>`).join('')||'<p class="text-zinc-600">لا commits</p>';
   }catch(e){ $('commitsFeed').innerHTML=`<p class="text-red-400 text-xs">${esc(e.message)}</p>`; }
 }
 
-// ---------------- terminal ----------------
 async function runTerm(){
   const cmd=$('termInput').value.trim(); if(!cmd) return;
-  $('termOut').textContent+=`\n$ ${cmd}\n`;
-  $('termInput').value='';
+  $('termOut').textContent+=`\n$ ${cmd}\n`; $('termInput').value='';
   try{
     const r=await api('/api/exec',{method:'POST',body:JSON.stringify({cmd,timeout:300})});
     $('termOut').textContent+=(r.stdout||'')+(r.stderr?`\n[stderr] ${r.stderr}`:'')+`\n[exit ${r.code}]\n`;
@@ -407,7 +682,6 @@ async function runTerm(){
 }
 function quickCmd(c){ $('termInput').value=c; runTerm(); }
 
-// ---------------- files ----------------
 async function lsDir(){
   const p=$('fsPath').value.trim()||'/home/runner';
   const r=await api(`/api/fs/ls?path=${encodeURIComponent(p)}`);
@@ -415,65 +689,30 @@ async function lsDir(){
     <div class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-zinc-800 cursor-pointer" onclick="${e.dir?`lsPath('${(r.path+'/'+e.name).replace(/'/g,"\\'")}')`:`readFile('${(r.path+'/'+e.name).replace(/'/g,"\\'")}')`}">
       <span>${e.dir?'📁':'📄'}</span><span class="flex-1 truncate">${esc(e.name)}</span>
       <span class="text-[10px] text-zinc-500">${e.dir?'':fmtB(e.size)}</span>
-      ${e.dir?'':`<a href="/api/fs/download?path=${encodeURIComponent(r.path+'/'+e.name)}&code=${encodeURIComponent(S.code)}" onclick="event.stopPropagation()" class="text-[10px] text-emerald-400 hover:underline">⬇</a>`}
     </div>`).join('')||'<p class="text-zinc-600">فارغ</p>');
 }
 function lsPath(p){ $('fsPath').value=p; lsDir(); }
 async function readFile(p){
   const r=await api(`/api/fs/read?path=${encodeURIComponent(p)}&bytes=200000`);
   $('fileView').classList.remove('hidden');
-  $('fileView').textContent = r.binary? `[binary ${fmtB(r.size)}] hex head:\n${r.text}` : `// ${r.path} (${fmtB(r.size)}${r.truncated?', مقطوع':''})\n${r.text}`;
-  $('fileView').scrollTop=0;
+  $('fileView').textContent = r.binary? `[binary]` : `// ${r.path}\n${r.text}`;
 }
 $('fsPath').addEventListener('keydown',e=>{if(e.key==='Enter')lsDir();});
 
-// ---------------- git & actions ----------------
 async function gitAct(what){
-  const r = what==='pull'||what==='push' ? await api(`/api/git/${what}`,{method:'POST',body:'{}'}) : await api(`/api/git/${what}`);
-  $('gitOut').textContent=`$ git ${what}\n`+(r.out||'')+(r.err?`\n[err] ${r.err}`:'');
-}
-async function ghRefresh(){
-  try{
-    const wfs=await api('/api/gh/workflows');
-    $('ghWorkflows').innerHTML=wfs.map(w=>`<div class="flex items-center gap-2 text-xs"><span class="flex-1 truncate">${esc(w.name)}</span><code class="text-zinc-500">${esc(w.path.split('/').pop())}</code><button onclick="$('dwName').value='${w.path.split('/').pop()}'" class="text-[10px] px-1.5 rounded bg-zinc-800">استخدام</button></div>`).join('');
-    const runs=await api('/api/gh/runs?per=12');
-    $('ghRuns').innerHTML=runs.map(x=>`<div class="flex items-center gap-2"><span class="${x.conclusion==='success'?'text-emerald-400':x.conclusion?'text-red-400':'text-amber-400'}">●</span><span class="truncate flex-1">${esc(x.name)}</span><span class="text-zinc-600">${esc(x.status)}${x.conclusion?'/'+esc(x.conclusion):''}</span></div>`).join('');
-  }catch(e){ $('ghRuns').innerHTML=`<p class="text-red-400 text-xs">${esc(e.message)}</p>`; }
-}
-async function dispatchWf(){
-  let inputs={}; try{ inputs=JSON.parse($('dwInputs').value||'{}'); }catch{ alert('JSON غير صالح'); return; }
-  const r=await api('/api/gh/dispatch',{method:'POST',body:JSON.stringify({workflow:$('dwName').value.trim(),inputs})});
-  alert('تم التشغيل: '+(r.dispatched||r.error)); ghRefresh();
-}
-function proposeCommit(){
-  if(!S.me) return alert('سجّل أولاً');
-  const payload={path:$('cpPath').value.trim(),message:$('cpMsg').value.trim(),content:$('cpContent').value};
-  if(!payload.path) return alert('المسار مطلوب');
-  api('/api/messages',{method:'POST',body:JSON.stringify({authorId:S.me.id,channel:'builds',content:`COMMIT ${payload.path}`,kind:'commit',payload})})
-    .then(()=>{ showTab('approve'); });
-}
-function loadFileToCommit(inp){
-  const f=inp.files[0]; if(!f) return;
-  $('cpPath').value=f.name; const rd=new FileReader();
-  rd.onload=()=>{ $('cpContent').value=rd.result; };
-  rd.readAsText(f);
+  const r = ['pull','push'].includes(what) ? await api(`/api/git/${what}`,{method:'POST',body:'{}'}) : await api(`/api/git/${what}`);
+  $('gitOut').textContent=`$ git ${what}\n`+(r.out||'');
 }
 
-// ---------------- mediafire ----------------
 async function mfStart(){ await api('/api/mf/download',{method:'POST',body:JSON.stringify({url:$('mfUrl').value.trim()})}); mfStatus(); }
-async function mfStatus(){
-  const r=await api('/api/mf/status');
-  $('mfOut').textContent=r.status||'—';
-}
+async function mfStatus(){ const r=await api('/api/mf/status'); $('mfOut').textContent=r.status||'—'; }
 
-// ---------------- agents ----------------
 function renderAgents(){
-  const html=a=>`<div class="flex items-center gap-2 text-sm"><span class="w-2 h-2 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><b>${esc(a.name)}</b><span class="text-xs text-zinc-500">${esc(a.role)}</span>${a.id===S.me?.id?'<span class="text-[9px] px-1 rounded bg-emerald-900 text-emerald-300">أنت</span>':''}<span class="mr-auto text-[10px] text-zinc-600">${a.active?'موافِّق نشط':'غير نشط'}</span></div>`;
+  const html=a=>`<div class="flex items-center gap-2 text-sm"><span class="w-2 h-2 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><b>${esc(a.name)}</b><span class="text-xs text-zinc-500">${esc(a.role)}</span>${a.id===S.me?.id?'<span class="text-[9px] px-1 rounded bg-emerald-900">أنت</span>':''}</div>`;
   $('agentFull').innerHTML=S.agents.map(html).join('')||'<p class="text-zinc-600">لا وكلاء</p>';
   $('agentMini').innerHTML=S.agents.map(a=>`<div class="flex items-center gap-1.5 text-xs"><span class="w-1.5 h-1.5 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><span class="truncate">${esc(a.name)}</span></div>`).join('');
 }
 
-// ---------------- poll ----------------
 let polling=false;
 async function poll(){
   if(polling||!S.me) return; polling=true;
@@ -487,8 +726,7 @@ async function poll(){
     $('tunnelChip').textContent='tunnel: '+(S.tunnel||'غير محدد');
     $('hdrRepo').textContent=`${st.owner}/${st.repo} • PAT ${st.pat?'✓':'✗'}`;
     const h=await fetch('/api/health').then(r=>r.json()).catch(()=>null);
-    if(h){ $('healthDot').textContent='● '+(h.files&&h.files.libUnreal?'lib✓':'lib✗'); $('healthDot').className=`text-[10px] px-2 py-1 rounded ${h.ok?'bg-emerald-900 text-emerald-300':'bg-red-900'}`;
-      $('footUp').textContent=`تشغيل ${Math.floor(h.uptimeSec/60)} د • وكلاء ${h.agents}`; }
+    if(h){ $('healthDot').textContent='●'; $('footUp').textContent=`تشغيل ${Math.floor(h.uptimeSec/60)} د`; }
   }catch(e){}
   polling=false;
 }
@@ -498,12 +736,12 @@ function connectSocket(){
   try{
     sock=io({transports:['websocket','polling']});
     sock.on('message:new',m=>{ S.messages.push(m); if(m.channel===S.channel) renderMsgs(); });
-    sock.on('message:updated',m=>{ const i=S.messages.findIndex(x=>x.id===m.id); if(i>=0)S.messages[i]=m; else S.messages.push(m); renderMsgs(); });
-    sock.on('notification:new',n=>{ S.notifications.push(n); if(S.tab==='approve')renderApprovals(); });
-    sock.on('notification:updated',n=>{ const i=S.notifications.findIndex(x=>x.id===n.id); if(i>=0)S.notifications[i]=n; if(S.tab==='approve')renderApprovals(); });
-    sock.on('commit:new',c=>{ if(S.tab==='commits')loadCommits(); });
-    sock.on('tunnel:set',u=>{ S.tunnel=u; $('tunnelChip').textContent='tunnel: '+u; });
+    sock.on('message:updated',m=>{ const i=S.messages.findIndex(x=>x.id===m.id); if(i>=0)S.messages[i]=m; renderMsgs(); });
     sock.on('agents:update',a=>{ S.agents=a; renderAgents(); });
+    sock.on('pr:new',()=>{ if(S.tab==='prs') loadPRs(); });
+    sock.on('pr:updated',()=>{ if(S.tab==='prs') loadPRs(); });
+    sock.on('pr:comment',()=>{ if(S.tab==='prs') loadPRs(); });
+    sock.on('commit:new',()=>{ if(S.tab==='commits') loadCommits(); });
   }catch(e){ sock=null; }
 }
 
