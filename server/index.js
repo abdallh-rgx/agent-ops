@@ -1,6 +1,6 @@
 // ============================================================================
-// Agent Ops Center — server (Node 20+, express + socket.io)
-// v2: Arabic-first UI, site-side GH_PAT control, full commits feed.
+// Agent Ops Center — server v3 (adds full Git/PR system)
+// Node 20+, express + socket.io
 // ============================================================================
 'use strict';
 const express = require('express');
@@ -29,10 +29,15 @@ const SERVER_LOG = path.join(HOME, 'server.log');
 const CHANNELS = ['general', 'interaction', 'quickbars', 'loot', 'vehicles', 'building', 'inventory', 'crash-debug', 're-tools', 'builds'];
 
 const state = {
-  agents: [], messages: [], notifications: [], commits: [],
+  agents: [], messages: [], notifications: [], commits: [], prs: [],
   tunnel: '', tunnelIssue: null, bootedAt: Date.now(),
 };
-try { const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); Object.assign(state, s); if (s && s.pat) PAT = s.pat; } catch {}
+try {
+  const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  Object.assign(state, s);
+  if (s && s.pat) PAT = s.pat;
+  if (!state.prs) state.prs = [];
+} catch {}
 const save = () => { try { fs.writeFileSync(STATE_FILE, JSON.stringify({ ...state, pat: PAT })); } catch (e) { console.error('save failed', e.message); } };
 const uid = () => crypto.randomBytes(6).toString('hex');
 
@@ -60,7 +65,7 @@ function activeApproverIds(exceptId) {
   return state.agents.filter(a => a.id !== exceptId && Date.now() - a.lastPing < ACTIVE_MS).map(a => a.id);
 }
 
-// ---------------- approval engine ----------------
+// ---------------- approval engine (legacy messages/notifications) ----------------
 function createNotification({ type, label, messageId = null, action = null, authorId }) {
   const n = {
     id: uid(), type, label, messageId, action,
@@ -138,7 +143,374 @@ function syncMessageStatus(messageId) {
   bcast('message:updated', m); save();
 }
 
-// ---------------- GitHub API ----------------
+// ============================================================================
+// ═══════════════════════ PULL REQUESTS ENGINE ═══════════════════════════
+// ============================================================================
+function prById(id) { return state.prs.find(p => p.id === id); }
+
+// Strip heavy file content before broadcasting
+function prSummary(pr) {
+  return {
+    ...pr,
+    files: (pr.files || []).map(f => ({ path: f.path, additions: f.additions || 0, deletions: f.deletions || 0 })),
+  };
+}
+
+// Simple unified-diff generator (LCS-based, hunks with 3 lines of context)
+function makeUnifiedDiff(oldStr, newStr, filePath) {
+  const a = (oldStr || '').split('\n');
+  const b = (newStr || '').split('\n');
+  const n = a.length, m = b.length;
+  let ops;
+  if (n * m > 500000) {
+    ops = [];
+    for (const l of a) ops.push({ t: '-', l });
+    for (const l of b) ops.push({ t: '+', l });
+  } else {
+    const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= m; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+    ops = [];
+    let i = n, j = m;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) { ops.push({ t: ' ', l: a[i - 1] }); i--; j--; }
+      else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { ops.push({ t: '+', l: b[j - 1] }); j--; }
+      else { ops.push({ t: '-', l: a[i - 1] }); i--; }
+    }
+    ops.reverse();
+  }
+  const changeIdxs = [];
+  for (let k = 0; k < ops.length; k++) if (ops[k].t !== ' ') changeIdxs.push(k);
+  if (!changeIdxs.length) return '';
+
+  const ctx = 3;
+  const groups = [];
+  let gs = Math.max(0, changeIdxs[0] - ctx);
+  let ge = Math.min(ops.length - 1, changeIdxs[0] + ctx);
+  for (let c = 1; c < changeIdxs.length; c++) {
+    const idx = changeIdxs[c];
+    if (idx - ctx <= ge + 1) ge = Math.min(ops.length - 1, idx + ctx);
+    else { groups.push([gs, ge]); gs = Math.max(0, idx - ctx); ge = Math.min(ops.length - 1, idx + ctx); }
+  }
+  groups.push([gs, ge]);
+
+  const hunks = [];
+  for (const [s, e] of groups) {
+    let oS = 1, nS = 1;
+    for (let k = 0; k < s; k++) { if (ops[k].t !== '+') oS++; if (ops[k].t !== '-') nS++; }
+    let oCnt = 0, nCnt = 0;
+    const body = [];
+    for (let k = s; k <= e; k++) {
+      body.push(ops[k].t + ops[k].l);
+      if (ops[k].t !== '+') oCnt++;
+      if (ops[k].t !== '-') nCnt++;
+    }
+    hunks.push(`@@ -${oS},${oCnt} +${nS},${nCnt} @@\n` + body.join('\n'));
+  }
+  return `--- a/${filePath}\n+++ b/${filePath}\n` + hunks.join('\n') + '\n';
+}
+
+function countDiffLines(oldStr, newStr) {
+  const diff = makeUnifiedDiff(oldStr || '', newStr || '', 'x');
+  let a = 0, d = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) a++;
+    else if (line.startsWith('-') && !line.startsWith('---')) d++;
+  }
+  return { additions: a, deletions: d };
+}
+
+function safeRepoPath(rel) {
+  const clean = String(rel || '').replace(/^\/+/, '');
+  const abs = path.resolve(REPO_DIR, clean);
+  if (!abs.startsWith(REPO_DIR)) throw new Error('path escapes repo');
+  return { rel: clean, abs };
+}
+
+async function applyFilesToRepo(files) {
+  for (const f of files) {
+    const { abs } = safeRepoPath(f.path);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, String(f.content || ''), 'utf8');
+  }
+}
+
+function commitAndPush(title) {
+  return new Promise(resolve => {
+    const safeTitle = String(title).replace(/["`$\\]/g, "'").slice(0, 200);
+    const cmd = `cd "${REPO_DIR}" && git add -A && git -c user.name="Agent Ops" -c user.email="agent-ops@local" commit -m "${safeTitle}" && git push origin HEAD 2>&1`;
+    exec(cmd, { timeout: 120000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({ ok: !err, out: stdout || '', err: stderr || (err && err.message) || '', code: err ? (err.code ?? 1) : 0 });
+    });
+  });
+}
+
+// ─── Repo file browser ───
+app.get('/api/repo/files', auth, (req, res) => {
+  try {
+    const { rel, abs } = safeRepoPath(req.query.path || '.');
+    fs.readdir(abs, { withFileTypes: true }, (err, entries) => {
+      if (err) return res.status(400).json({ error: err.message });
+      const out = entries
+        .filter(e => e.name !== '.git')
+        .map(e => {
+          const child = path.join(abs, e.name);
+          let size = 0;
+          try { size = fs.statSync(child).size; } catch {}
+          return { name: e.name, dir: e.isDirectory(), size, path: path.relative(REPO_DIR, child).split(path.sep).join('/') };
+        })
+        .sort((x, y) => (y.dir - x.dir) || x.name.localeCompare(y.name));
+      res.json({ path: rel, entries: out });
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.get('/api/repo/file', auth, (req, res) => {
+  try {
+    const { rel, abs } = safeRepoPath(req.query.path);
+    if (!rel) return res.status(400).json({ error: 'path required' });
+    const content = fs.readFileSync(abs, 'utf8');
+    res.json({ path: rel, content, size: content.length });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.post('/api/repo/file', auth, (req, res) => {
+  try {
+    const { rel, abs } = safeRepoPath(req.body.path);
+    if (!rel) return res.status(400).json({ error: 'path required' });
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, String(req.body.content || ''), 'utf8');
+    res.json({ ok: true, path: rel });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ─── PRs CRUD ───
+app.get('/api/prs', auth, (req, res) => {
+  res.json(state.prs.slice().reverse().map(prSummary));
+});
+
+app.get('/api/prs/:id', auth, (req, res) => {
+  const pr = prById(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  res.json(prSummary(pr));
+});
+
+app.post('/api/prs', auth, (req, res) => {
+  const { title, description, files, authorId, authorName } = req.body;
+  const author = agentById(authorId);
+  if (!author) return res.status(400).json({ error: 'unknown authorId — register first' });
+  if (!title || !String(title).trim()) return res.status(400).json({ error: 'title required' });
+  if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'files required' });
+  touchAgent(authorId);
+
+  // Validate paths and compute stats
+  const processed = [];
+  for (const f of files) {
+    if (!f || !f.path) return res.status(400).json({ error: 'each file needs path' });
+    try { safeRepoPath(f.path); } catch (e) { return res.status(400).json({ error: e.message }); }
+    const { additions, deletions } = countDiffLines(f.baseContent || '', f.content || '');
+    processed.push({
+      path: String(f.path).replace(/^\/+/, ''),
+      content: String(f.content || ''),
+      baseContent: String(f.baseContent || ''),
+      additions, deletions,
+    });
+  }
+
+  const required = activeApproverIds(authorId);
+  const pr = {
+    id: uid(),
+    title: String(title).slice(0, 200),
+    description: String(description || '').slice(0, 5000),
+    files: processed,
+    authorId, authorName: author.name || authorName || '?',
+    createdAt: Date.now(),
+    status: required.length === 0 ? 'approved' : 'open',
+    required, votes: [], comments: [],
+  };
+  state.prs.push(pr);
+  bcast('pr:new', prSummary(pr));
+  save();
+  log(`PR created by ${pr.authorName}: ${pr.title} (status=${pr.status})`);
+  res.json(prSummary(pr));
+});
+
+app.get('/api/prs/:id/diff', auth, (req, res) => {
+  const pr = prById(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  const idx = Number(req.query.file || 0);
+  const f = pr.files[idx];
+  if (!f) return res.status(400).json({ error: 'bad file index' });
+  const diff = makeUnifiedDiff(f.baseContent || '', f.content || '', f.path);
+  res.json({ path: f.path, diff: diff || '(no diff — identical)' });
+});
+
+app.post('/api/prs/:id/vote', auth, (req, res) => {
+  const pr = prById(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  if (!['open', 'changes_requested', 'approved'].includes(pr.status)) {
+    return res.status(400).json({ error: 'PR is ' + pr.status });
+  }
+  const { agentId, decision, comment } = req.body;
+  if (!['approve', 'request_changes', 'reject'].includes(decision)) {
+    return res.status(400).json({ error: 'bad decision' });
+  }
+  const agent = agentById(agentId);
+  if (!agent) return res.status(400).json({ error: 'unknown agent' });
+  touchAgent(agentId);
+
+  // New active agent voting → add to required
+  if (agentId !== pr.authorId && Date.now() - agent.lastPing < ACTIVE_MS && !pr.required.includes(agentId)) {
+    pr.required.push(agentId);
+  }
+
+  const existing = pr.votes.find(v => v.agentId === agentId);
+  if (existing) {
+    existing.decision = decision;
+    existing.comment = String(comment || '').slice(0, 2000);
+    existing.at = Date.now();
+  } else {
+    pr.votes.push({ agentId, decision, comment: String(comment || '').slice(0, 2000), at: Date.now() });
+  }
+
+  // Recompute status
+  const requiredVotes = pr.votes.filter(v => pr.required.includes(v.agentId));
+  if (requiredVotes.some(v => v.decision === 'reject')) {
+    pr.status = 'rejected';
+  } else if (requiredVotes.some(v => v.decision === 'request_changes')) {
+    pr.status = 'changes_requested';
+  } else {
+    const approvedIds = new Set(requiredVotes.filter(v => v.decision === 'approve').map(v => v.agentId));
+    pr.status = pr.required.every(id => approvedIds.has(id)) ? 'approved' : 'open';
+  }
+
+  bcast('pr:updated', prSummary(pr));
+  save();
+  log(`PR ${pr.id.slice(0, 6)} vote: ${agent.name} → ${decision} (status=${pr.status})`);
+  res.json({ ok: true, pr: prSummary(pr) });
+});
+
+app.post('/api/prs/:id/comment', auth, (req, res) => {
+  const pr = prById(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  const { agentId, name, content } = req.body;
+  const text = String(content || '').trim();
+  if (!text) return res.status(400).json({ error: 'content required' });
+  if (agentId) touchAgent(agentId);
+  const agent = agentById(agentId);
+  const comment = {
+    id: uid(),
+    agentId: agentId || null,
+    name: (agent && agent.name) || name || '?',
+    content: text.slice(0, 5000),
+    at: Date.now(),
+  };
+  pr.comments.push(comment);
+  bcast('pr:comment', { prId: pr.id, comment });
+  save();
+  res.json({ ok: true, comment });
+});
+
+app.post('/api/prs/:id/merge', auth, async (req, res) => {
+  const pr = prById(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  if (pr.status === 'merged') return res.status(400).json({ error: 'already merged' });
+  if (pr.status === 'rejected') return res.status(400).json({ error: 'PR was rejected' });
+  if (pr.status === 'closed') return res.status(400).json({ error: 'PR is closed' });
+
+  // Absorb any currently-active agents who joined after creation
+  for (const id of activeApproverIds(pr.authorId)) {
+    if (!pr.required.includes(id)) pr.required.push(id);
+  }
+
+  // Rejection check
+  const rejection = pr.votes.find(v => v.decision === 'reject' && pr.required.includes(v.agentId));
+  if (rejection) {
+    const ag = agentById(rejection.agentId);
+    return res.status(400).json({ error: `rejected by ${ag ? ag.name : rejection.agentId}` });
+  }
+  // Active request-changes check
+  for (const v of pr.votes) {
+    if (v.decision === 'request_changes' && pr.required.includes(v.agentId)) {
+      const ag = agentById(v.agentId);
+      if (ag && Date.now() - ag.lastPing < ACTIVE_MS) {
+        return res.status(400).json({ error: `changes requested by ${ag.name}: ${v.comment || ''}` });
+      }
+    }
+  }
+  // All required must have approved
+  const approvedIds = new Set(pr.votes.filter(v => v.decision === 'approve').map(v => v.agentId));
+  const missing = pr.required.filter(id => !approvedIds.has(id));
+  if (missing.length > 0) {
+    return res.status(400).json({ error: `missing approvals (${missing.length})`, missing });
+  }
+
+  // Conflict check: verify current disk state matches baseContent
+  for (const f of pr.files) {
+    try {
+      const { abs } = safeRepoPath(f.path);
+      let current = '';
+      try { current = fs.readFileSync(abs, 'utf8'); } catch { current = ''; }
+      if (current !== (f.baseContent || '')) {
+        return res.status(409).json({
+          error: `الملف ${f.path} تم تعديله خارج الـ PR — أعد فتحه وحدّث الاقتراح`,
+          conflict: f.path,
+        });
+      }
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // Apply
+  try {
+    await applyFilesToRepo(pr.files);
+  } catch (e) {
+    return res.status(500).json({ error: 'apply failed: ' + e.message });
+  }
+
+  // Commit + push
+  const commitMsg = `PR#${pr.id.slice(0, 6)}: ${pr.title}`.slice(0, 200);
+  const pushResult = await commitAndPush(commitMsg);
+  const shaMatch = pushResult.out.match(/\[[\w./-]+ ([a-f0-9]{7,})\]/);
+
+  pr.status = 'merged';
+  pr.mergedAt = Date.now();
+  pr.mergedBy = req.body.agentId || null;
+  pr.mergedCommit = shaMatch ? shaMatch[1] : null;
+  pr.mergeResult = { ok: pushResult.ok, code: pushResult.code, err: pushResult.err };
+
+  recordCommit({
+    path: pr.files.map(f => f.path).join(', '),
+    message: commitMsg,
+    by: pr.authorName,
+    sha: pr.mergedCommit || 'local',
+    ok: pushResult.ok,
+  });
+  bcast('pr:updated', prSummary(pr));
+  save();
+  log(`PR ${pr.id.slice(0, 6)} MERGED by ${req.body.agentId || '?'} (push ok=${pushResult.ok})`);
+
+  res.json({ ok: true, pr: prSummary(pr), push: { ok: pushResult.ok, out: pushResult.out.slice(-2000), err: pushResult.err.slice(-2000) } });
+});
+
+app.post('/api/prs/:id/close', auth, (req, res) => {
+  const pr = prById(req.params.id);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  if (pr.status === 'merged') return res.status(400).json({ error: 'already merged' });
+  pr.status = 'closed';
+  pr.closedAt = Date.now();
+  bcast('pr:updated', prSummary(pr));
+  save();
+  res.json({ ok: true, pr: prSummary(pr) });
+});
+
+// ============================================================================
+// ═══════════════════════ GitHub API ═══════════════════════════════════════
+// ============================================================================
 async function gh(apiPath, opts = {}) {
   if (!PAT) throw new Error('no PAT configured (set via site Settings or PAT_TOKEN secret)');
   const r = await fetch(`https://api.github.com${apiPath}`, {
@@ -195,7 +567,7 @@ async function pushFileToGitHub(filePath, content, message, branch = 'main') {
 }
 
 // ---------------- boot ----------------
-log('=== Agent Ops Center v2 booting ===');
+log('=== Agent Ops Center v3 booting ===');
 function cloneIdk() {
   if (!PAT) return log('skip idk clone (no PAT yet)');
   exec(`git clone --depth 50 https://x-access-token:${PAT}@github.com/${OWNER}/${REPO}.git ${REPO_DIR} 2>&1 || (cd ${REPO_DIR} && git pull 2>&1)`,
@@ -221,6 +593,7 @@ app.get('/api/auth', auth, (req, res) => res.json({ ok: true }));
 app.get('/api/state', auth, (req, res) => res.json({
   channels: CHANNELS, tunnel: state.tunnel, agents: state.agents.map(agentView),
   messages: state.messages, notifications: state.notifications, commits: state.commits,
+  prOpen: (state.prs || []).filter(p => ['open', 'changes_requested', 'approved'].includes(p.status)).length,
   pat: !!PAT, owner: OWNER, repo: REPO,
 }));
 app.post('/api/tunnel', (req, res) => {
@@ -235,7 +608,7 @@ app.post('/api/tunnel', (req, res) => {
   res.json({ ok: true, tunnel: url });
 });
 
-// ---------------- settings (site-side PAT control) ----------------
+// ---------------- settings ----------------
 app.get('/api/settings', auth, (req, res) => res.json({ pat: !!PAT, owner: OWNER, repo: REPO }));
 app.post('/api/settings', auth, (req, res) => {
   const newPat = String(req.body.pat || '').trim();
@@ -262,7 +635,7 @@ app.post('/api/agents', auth, (req, res) => {
 });
 app.post('/api/agents/:id/ping', auth, (req, res) => { touchAgent(req.params.id); save(); res.json({ ok: true }); });
 
-// ---------------- chat + strict approvals ----------------
+// ---------------- chat + strict approvals (legacy) ----------------
 app.get('/api/messages', auth, (req, res) => {
   let list = state.messages;
   if (req.query.channel) list = list.filter(m => m.channel === req.query.channel);
@@ -327,7 +700,7 @@ app.post('/api/notifications/:id/vote', auth, (req, res) => {
   res.json(r);
 });
 
-// ---------------- commits feed (site commits + GitHub commits) ----------------
+// ---------------- commits feed ----------------
 app.get('/api/commits', auth, async (req, res) => {
   try {
     const list = await gh(`/repos/${OWNER}/${REPO}/commits?per_page=${req.query.per || 30}`);
@@ -416,7 +789,7 @@ app.post('/api/git/pull', auth, (req, res) => gitCmd('pull --rebase', res));
 app.post('/api/git/push', auth, (req, res) => gitCmd('push origin HEAD', res));
 app.get('/api/git/diff', auth, (req, res) => gitCmd('diff | head -c 100000', res));
 
-// ---------------- GitHub (idk control) ----------------
+// ---------------- GitHub Actions ----------------
 app.get('/api/gh/runs', auth, async (req, res) => {
   try {
     const r = await gh(`/repos/${OWNER}/${REPO}/actions/runs?per_page=${req.query.per || 15}`);
@@ -446,4 +819,4 @@ io.on('connection', socket => {
 app.use(express.static(path.join(__dirname, '../public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../public', 'index.html')));
 
-server.listen(PORT, () => log(`Agent Ops Center v2 listening on :${PORT} (PAT=${!!PAT}, code set=${!!CODE})`));
+server.listen(PORT, () => log(`Agent Ops Center v3 listening on :${PORT} (PAT=${!!PAT}, code set=${!!CODE})`));
