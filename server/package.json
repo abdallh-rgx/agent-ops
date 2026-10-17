@@ -1,0 +1,13 @@
+{
+  "name": "agent-ops-server",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Agent Ops Center v2 — Arabic UI + site-side PAT + commits feed + strict approvals",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

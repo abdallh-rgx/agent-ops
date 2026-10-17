@@ -1,0 +1,102 @@
+name: "🖥️ Host Ops Center"
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Keep-alive minutes (max 350)'
+        required: false
+        default: '330'
+      access_code:
+        description: 'Access code for the site'
+        required: false
+        default: 'erbi2025'
+      mediafire_url:
+        description: 'MediaFire src.zip URL'
+        required: false
+        default: 'https://www.mediafire.com/file/8f5r7ltcfiynt0w/src.zip/file'
+
+concurrency:
+  group: ops-host
+  cancel-in-progress: true
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Install RE tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq unzip radare2 >/dev/null 2>&1 || true
+          (pip install --quiet capstone pyelftools requests 2>/dev/null || pip install --quiet --break-system-packages capstone pyelftools requests) || true
+          python3 -c "import capstone; print('capstone ok')" || true
+
+      - name: Start MediaFire download (background)
+        run: |
+          chmod +x scripts/dl_mediafire.sh
+          nohup bash scripts/dl_mediafire.sh "${{ inputs.mediafire_url }}" "$HOME/fortnite-src" > "$HOME/mf.log" 2>&1 &
+          echo "mediafire download started in background"
+
+      - name: Install server deps
+        run: cd server && npm install --omit=dev --no-audit --no-fund --loglevel=error
+
+      - name: Start server
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ACCESS_CODE: ${{ inputs.access_code }}
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          nohup node server/index.js > "$HOME/server.log" 2>&1 &
+          sleep 4
+          curl -s localhost:8080/api/health || (cat "$HOME/server.log" && exit 1)
+
+      - name: Start cloudflared quick tunnel
+        run: |
+          curl -sL --retry 3 -o /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x /tmp/cloudflared
+          nohup /tmp/cloudflared tunnel --url http://localhost:8080 --no-autoupdate > "$HOME/tunnel.log" 2>&1 &
+          URL=""
+          for i in $(seq 1 90); do
+            URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$HOME/tunnel.log" | head -1)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+          if [ -z "$URL" ]; then echo "tunnel failed"; tail -50 "$HOME/tunnel.log"; exit 1; fi
+          echo "$URL" > /tmp/tunnel-url
+          echo "🌐 TUNNEL URL: $URL"
+
+      - name: Register tunnel + outer health check
+        run: |
+          URL=$(cat /tmp/tunnel-url)
+          curl -s -X POST localhost:8080/api/tunnel -H 'content-type: application/json' -d "{\"url\":\"$URL\"}" || true
+          sleep 5
+          curl -s --max-time 30 "$URL/api/health" && echo "" || echo "warn: outer check failed (tunnel warming up)"
+
+      - name: Job summary + artifact
+        run: |
+          URL=$(cat /tmp/tunnel-url)
+          {
+            echo "## 🌐 مركز العمليات يعمل"
+            echo ""
+            echo "**URL:** $URL"
+            echo ""
+            echo "كود الدخول في مدخلات الـ workflow. الجلسة ~${{ inputs.duration_minutes }} دقيقة."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL" > url.txt
+
+      - uses: actions/upload-artifact@v4
+        with: { name: tunnel-url, path: url.txt }
+
+      - name: Keep alive
+        run: |
+          END=$((SECONDS + ${{ inputs.duration_minutes }} * 60))
+          while [ $SECONDS -lt $END ]; do
+            sleep 60
+            if ! curl -s -m 10 localhost:8080/api/health | grep -q '"ok":true'; then
+              echo "server not responding, restarting..."
+              cd "$GITHUB_WORKSPACE" && nohup node server/index.js >> "$HOME/server.log" 2>&1 &
+            fi
+          done

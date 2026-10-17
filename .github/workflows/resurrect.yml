@@ -1,0 +1,34 @@
+name: "♻️ Resurrect Ops Center"
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-host if tunnel stale
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          if [ -z "$PAT_TOKEN" ]; then echo "no PAT secret"; exit 0; fi
+          LAST=$(curl -s -H "Authorization: token $PAT_TOKEN" \
+            "https://api.github.com/repos/abdallh-rgx/idk/issues/comments?sort=created&direction=desc&per_page=30" \
+            | grep -oE '"created_at": *"[^"]+"' | head -1 | cut -d'"' -f4)
+          echo "last comment: $LAST"
+          if [ -z "$LAST" ]; then
+            echo "no comments — dispatching host"
+            curl -s -X POST -H "Authorization: token $PAT_TOKEN" -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/abdallh-rgx/agent-ops/actions/workflows/host.yml/dispatches -d '{"ref":"main","inputs":{}}'
+            exit 0
+          fi
+          LAST_TS=$(date -d "$LAST" +%s 2>/dev/null || echo 0)
+          AGE=$(( ($(date +%s) - LAST_TS) / 60 ))
+          echo "age minutes: $AGE"
+          if [ "$AGE" -gt 330 ]; then
+            echo "stale — dispatching host"
+            curl -s -X POST -H "Authorization: token $PAT_TOKEN" -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/abdallh-rgx/agent-ops/actions/workflows/host.yml/dispatches -d '{"ref":"main","inputs":{}}'
+          else
+            echo "tunnel fresh"
+          fi
