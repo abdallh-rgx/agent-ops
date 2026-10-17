@@ -39,26 +39,32 @@ def rva2off(loads, rva):
             return s['off'] + (rva - s['va'])
     return None
 
-def find_string_vas(data, loads, needle):
-    """كل مواضع سلسلة (null-terminated) داخل المقاطع القابلة للقراءة."""
+def find_string_vas(data, loads, needle, raw=False):
+    """كل مواضع السلسلة. raw=True يجد كل التطابقات (FNamePool بلا null-termination)
+    ويضيف أيضاً مواضع رأس الإدخال (va-2 / va-4) لأن المرجع يشير لرأس الإدخال."""
     vas = []
     nb = needle.encode() if isinstance(needle, str) else needle
     for s in loads:
-        if not (s['flags'] & 2):  # W only
+        if not (s['flags'] & 4):  # يجب أن يكون قابلاً للقراءة (R)
             continue
         seg = data[s['off']:s['off'] + s['size']]
         start = 0
         while True:
             i = seg.find(nb, start)
             if i < 0: break
-            # يجب أن تكون بداية سلسلة (الحرف قبلها 0) وتنتهي بـ 0
-            before_ok = (i == 0) or seg[i-1] == 0
-            end = i + len(nb)
-            after_ok = (end < len(seg)) and seg[end] == 0
-            if before_ok and after_ok:
-                vas.append(s['va'] + i)
+            va = s['va'] + i
+            if raw:
+                vas.append(va)
+                if i >= 2: vas.append(va - 2)   # FNamePool header (uint16)
+                if i >= 4: vas.append(va - 4)
+            else:
+                before_ok = (i == 0) or seg[i-1] == 0
+                end = i + len(nb)
+                after_ok = (end < len(seg)) and seg[end] == 0
+                if before_ok and after_ok:
+                    vas.append(va)
             start = i + 1
-    return vas
+    return sorted(set(vas))
 
 def scan_refs(data, loads, text):
     """مسح واحد لكل مقطع X: يرجع (str_refs, code_refs, data_refs)
@@ -144,10 +150,10 @@ def main():
     if not queries:
         print('لا أهداف'); return
 
-    # اجمع كل عناوين السلاسل
+    # اجمع كل عناوين السلاسل (raw دائماً — FNamePool بلا null)
     targets = {}
     for q, kind in queries:
-        vas = find_string_vas(data, loads, q)
+        vas = find_string_vas(data, loads, q, raw=True)
         if not vas:
             print(f'!! سلسلة "{q}" غير موجودة في الملف')
         for va in vas:
@@ -161,51 +167,75 @@ def main():
     str_refs, code_refs, data_refs = scan_refs(data, loads, text)
     print(f'// refs: strings={len(str_refs)}')
 
-    # فهرس refs بالسلسلة
+    # فهرس refs بالسلسلة (كود مباشر ADRP+ADD)
     by_va = {}
     for pc, tva, rd in str_refs:
         if tva in targets:
             by_va.setdefault(tva, []).append(pc)
 
-    code_arr = [pc for pc, t in [] ]  # placeholder
-    # candidates: نحتاج كل ADRP+ADD يحسب عنوان كود — لكن scan_refs خزّن الكل في str_refs (عناوين أي شيء).
-    # عنوان الكود = كل ref هدفه داخل مقطع X:
+    # refs عبر جداول البيانات (ADRP+LDR) — جدول يحتوي عنوان الإدخال، والقيم حوله مؤشرات كود
+    data_by_va = {}
+    for pc, tva in data_refs:
+        if tva in targets:
+            data_by_va.setdefault(tva, []).append(pc)
+
     text_lo, text_hi = text['va'], text['va'] + text['size']
-    code_sites = [(pc, t) for pc, t, _ in str_refs if text_lo <= t < text_hi and t != pc - 0]  # استبعد self-page
-    code_pcs = sorted(pc for pc, t in code_sites)
     import bisect
-    code_addrs = sorted(t for pc, t in code_sites)
+    code_sites = sorted((pc, t) for (pc, t, _) in str_refs if text_lo <= t < text_hi)
+    code_pcs = [p for p, _ in code_sites]
+
+    def code_cands_near(pc, win):
+        lo = bisect.bisect_left(code_pcs, pc - win)
+        hi = bisect.bisect_right(code_pcs, pc + win)
+        return [(cpc, code_sites[i][1]) for i, cpc in enumerate(code_pcs[lo:hi], start=lo)]
+
+    def code_ptrs_near(dva, span=0x60):
+        """اقرأ qwords حول عنوان جدول واعثر على مؤشرات كود."""
+        out = []
+        for s in loads:
+            if s['va'] <= dva < s['va'] + s['size'] and (s['flags'] & 4):
+                base = s['off'] + (dva - s['va'])
+                for delta in range(-span, span + 1, 8):
+                    o = base + delta
+                    if 0 <= o <= len(data) - 8:
+                        q = struct.unpack_from('<Q', data, o)[0]
+                        if text_lo <= q < text_hi:
+                            out.append((dva + delta, q))
+                break
+        return out
 
     for q, kind in queries:
         vas = [va for va, name in targets.items() if name == q]
         if not vas: continue
         print(f'\n=== {q} ===')
         seen = set()
+        total_refs = 0
         for vi, va in enumerate(sorted(vas)):
-            refs = by_va.get(va, [])
-            for pc in refs:
-                # مرشحو الكود قرب pc
-                lo = bisect.bisect_left(code_pcs, pc - window)
-                hi = bisect.bisect_right(code_pcs, pc + window)
-                for cp in code_pcs[lo:hi]:
-                    idx = code_pcs.index(cp) if False else None
-                cands = []
-                for cp in code_pcs[lo:hi]:
-                    # ابحث عنوان الهدف الخاص بـ cp
-                    pass
-                # أعد الحساب مباشرة
-                cand = [(cpc, ct) for (cpc, ct) in code_sites if abs(cpc - pc) <= window]
+            # مسار 1: مراجع كود مباشرة
+            for pc in by_va.get(va, []):
+                total_refs += 1
+                cand = [(cpc, ct) for (cpc, ct) in code_cands_near(pc, window) if ct != va]
                 for cpc, ct in sorted(cand, key=lambda x: abs(x[0] - pc))[:4]:
                     key = (pc, ct)
                     if key in seen: continue
                     seen.add(key)
                     known = KNOWN.get(ct)
                     tag = f'  <== KNOWN: {known}' if known else ''
-                    if text_lo <= ct < text_hi:
-                        print(f'  [str@{va:#x}] ref@{pc:#x} -> FUNC cand {ct:#x} (Δ{abs(cpc-pc):#x}){tag}')
-                        print('    ' + prologue(data, loads, text, ct, 5).replace('\n', '\n    '))
-                # مرشحو البيانات (vtable/GOT)
-    print('\n// انتهى. تحقق: cand قريب من KNOWN SetIsDoorOpen=0x05955e38 يعني الماسح دقيق.')
+                    print(f'  [str@{va:#x}] code-ref@{pc:#x} -> FUNC cand {ct:#x} (Δ{abs(cpc-pc):#x}){tag}')
+                    print('    ' + prologue(data, loads, text, ct, 5).replace('\n', '\n    '))
+            # مسار 2: جداول البيانات
+            for dpc in data_by_va.get(va, []):
+                total_refs += 1
+                for tbl, ptr in code_ptrs_near(va):
+                    key = ('d', tbl, ptr)
+                    if key in seen: continue
+                    seen.add(key)
+                    known = KNOWN.get(ptr)
+                    tag = f'  <== KNOWN: {known}' if known else ''
+                    print(f'  [str@{va:#x}] data-tbl@{tbl:#x} (ref@{dpc:#x}) -> PTR {ptr:#x}{tag}')
+                    print('    ' + prologue(data, loads, text, ptr, 5).replace('\n', '\n    '))
+        if total_refs == 0:
+            print('  (لا مراجع كود/بيانات — الاسم في FNamePool فقط؛ استدعِ الدالة عبر ProcessEvent بدلاً من hooking)')
 
 if __name__ == '__main__':
     main()
