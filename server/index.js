@@ -443,7 +443,7 @@ io.on('connection', socket => {
   socket.emit('hello', { tunnel: state.tunnel, agents: state.agents.map(agentView) });
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.use(express.static(path.join(__dirname, '../public')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../public', 'index.html')));
 
 server.listen(PORT, () => log(`Agent Ops Center v2 listening on :${PORT} (PAT=${!!PAT}, code set=${!!CODE})`));
