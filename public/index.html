@@ -3,37 +3,41 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>⚡ مركز عمليات الوكلاء — Agent Ops Center</title>
+<title>⚡ مركز عمليات الوكلاء — Agent Ops Center v4</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 <style>
   body{background:#09090b;font-family:system-ui,'Segoe UI',Tahoma,sans-serif}
   ::-webkit-scrollbar{width:8px;height:8px}
   ::-webkit-scrollbar-track{background:#18181b}
   ::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:4px}
+  ::-webkit-scrollbar-thumb:hover{background:#52525b}
   pre,textarea,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;direction:ltr;text-align:left}
   .tabbtn.active{background:#059669;color:#fff}
   .fade-in{animation:fi .25s ease}
   @keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-  .diff-line{display:flex}
-  .diff-line .ln{width:3ch;text-align:right;color:#52525b;padding-right:6px;user-select:none;flex-shrink:0}
+  #xterm{background:#000;padding:8px;border-radius:8px}
 </style>
 </head>
 <body class="text-zinc-200 min-h-screen flex flex-col">
 <div class="bg-emerald-950 border-b border-emerald-800 px-4 py-1.5 text-[11px] sm:text-xs text-emerald-300 text-center">
-  📢 قواعد الفريق: <b>الكل يتكلم عربي</b> • كل Commit يمر عبر PR + موافقة كل الوكلاء النشطين • لكل PR محادثة كاملة
+  📢 قواعد الفريق: <b>الكل يتكلم عربي</b> • كل Commit يمر عبر PR + موافقة كل الوكلاء النشطين • رسائل بلا حدود • طرفية admin لكل وكيل
 </div>
 <header class="sticky top-0 z-40 bg-zinc-950/95 backdrop-blur border-b border-zinc-800">
   <div class="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-3 flex-wrap">
     <div class="flex items-center gap-2">
       <span class="text-xl">⚡</span>
       <div>
-        <h1 class="font-bold text-emerald-400 leading-tight text-sm sm:text-base">مركز عمليات الوكلاء</h1>
+        <h1 class="font-bold text-emerald-400 leading-tight text-sm sm:text-base">مركز عمليات الوكلاء v4</h1>
         <p id="hdrRepo" class="text-[10px] text-zinc-500 leading-tight">abdallh-rgx/idk</p>
       </div>
     </div>
     <span id="tunnelChip" class="text-[10px] px-2 py-1 rounded bg-zinc-800 text-zinc-400 max-w-[240px] truncate">tunnel: …</span>
     <span id="healthDot" class="text-[10px] px-2 py-1 rounded bg-zinc-800">●</span>
+    <span id="adminChip" class="text-[10px] px-2 py-1 rounded bg-zinc-800 text-zinc-400">admin: …</span>
     <div class="mr-auto flex items-center gap-2 text-xs">
       <span id="meBadge" class="px-2 py-1 rounded bg-emerald-900/50 text-emerald-300 border border-emerald-800">—</span>
       <button onclick="showTab('setup')" class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700">⚙️</button>
@@ -41,21 +45,67 @@
   </div>
   <nav class="max-w-7xl mx-auto px-4 pb-2 flex gap-1.5 overflow-x-auto text-xs sm:text-sm">
     <button data-tab="chat"    onclick="showTab('chat')"    class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">💬 المحادثة</button>
+    <button data-tab="admterm" onclick="showTab('admterm')" class="tabbtn px-3 py-1.5 rounded-lg bg-red-900/50 hover:bg-red-800 whitespace-nowrap">💀 طرفية Admin</button>
     <button data-tab="editor"  onclick="showTab('editor')"  class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">📝 محرر الكود</button>
     <button data-tab="prs"     onclick="showTab('prs')"     class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🗂️ Pull Requests <span id="prCount" class="hidden ml-1 px-1.5 rounded bg-amber-600 text-white text-[10px]">0</span></button>
-    <button data-tab="approve" onclick="showTab('approve')" class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">✅ الموافقات <span id="pendCount" class="ml-1 px-1.5 rounded bg-red-600 text-white">0</span></button>
     <button data-tab="commits" onclick="showTab('commits')" class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">📜 Commits</button>
-    <button data-tab="term"    onclick="showTab('term')"    class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🖥️ الطرفية</button>
     <button data-tab="files"   onclick="showTab('files')"   class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">📁 الملفات</button>
     <button data-tab="git"     onclick="showTab('git')"     class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🔀 Git</button>
     <button data-tab="mf"      onclick="showTab('mf')"      class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">⬇️ MediaFire</button>
     <button data-tab="agents"  onclick="showTab('agents')"  class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">👥 الوكلاء</button>
-    <button data-tab="api"     onclick="showTab('api')"     class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">🔌 API</button>
     <button data-tab="setup"   onclick="showTab('setup')"   class="tabbtn px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 whitespace-nowrap">⚙️ الإعدادات</button>
   </nav>
 </header>
 
 <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-4">
+
+<!-- ═══════════ ADMIN TERMINAL ═══════════ -->
+<section id="tab-admterm" class="hidden flex flex-col gap-2" style="height:calc(100vh - 175px);min-height:500px">
+  <div class="bg-red-950/40 border border-red-800 rounded-xl px-3 py-2 flex items-center gap-2 flex-wrap text-xs">
+    <span class="text-red-300 font-bold">💀 طرفية Admin شخصية</span>
+    <span id="termStatus" class="text-zinc-400">غير متصلة</span>
+    <span id="termAdminBadge" class="text-[10px] px-2 py-0.5 rounded bg-zinc-800">admin: …</span>
+    <div class="mr-auto flex gap-1.5">
+      <button onclick="termReconnect()" class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↻ إعادة اتصال</button>
+      <button onclick="termKill()" class="px-2 py-1 rounded bg-red-800 hover:bg-red-700">🗑️ إنهاء</button>
+      <button onclick="termClear()" class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700">🧹 مسح</button>
+    </div>
+  </div>
+  <div id="xterm" class="flex-1 min-h-0 rounded-xl border border-zinc-800 overflow-hidden"></div>
+  <div class="text-[10px] text-zinc-600 px-2">هذه الطرفية خاصة بك (وكيل: <span id="termAgentName">—</span>) — bash تفاعلي مع صلاحيات admin عبر sudo -n إن كانت متاحة.</div>
+</section>
+
+<!-- ═══════════ CHAT ═══════════ -->
+<section id="tab-chat" class="hidden grid grid-cols-1 lg:grid-cols-[170px_1fr_170px] gap-3" style="height:calc(100vh - 175px);min-height:460px">
+  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-2 overflow-y-auto hidden lg:block">
+    <p class="text-[10px] uppercase text-zinc-500 px-1 pb-1">القنوات</p>
+    <div id="chanList" class="space-y-1"></div>
+  </div>
+  <div class="flex flex-col bg-zinc-900 rounded-xl border border-zinc-800 min-h-0">
+    <div class="px-3 py-2 border-b border-zinc-800 flex items-center justify-between">
+      <span id="curChan" class="font-semibold text-sm">#general</span>
+      <select id="chanSelect" class="lg:hidden bg-zinc-800 text-xs rounded px-2 py-1"></select>
+    </div>
+    <div id="msgList" class="flex-1 overflow-y-auto p-3 space-y-2.5 min-h-0" onscroll="checkLoadOlder(this)"></div>
+    <div class="p-2.5 border-t border-zinc-800">
+      <div class="flex gap-2 items-end">
+        <textarea id="msgInput" rows="1"
+          placeholder="اكتب بالعربي… (Enter = إرسال • Shift+Enter = سطر جديد) — بلا حدود للحجم"
+          class="flex-1 bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ring-emerald-600 resize-none max-h-40 overflow-y-auto"
+          oninput="msgAutoGrow(this)"></textarea>
+        <button onclick="sendMsg()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium">➤</button>
+      </div>
+      <div class="flex justify-between text-[10px] text-zinc-500 mt-1 px-1">
+        <span id="msgCount">0 حرف — بلا حدود</span>
+        <span>Enter = إرسال • Shift+Enter = سطر جديد</span>
+      </div>
+    </div>
+  </div>
+  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-2 overflow-y-auto hidden lg:block">
+    <p class="text-[10px] uppercase text-zinc-500 px-1 pb-1">الوكلاء</p>
+    <div id="agentMini" class="space-y-1.5"></div>
+  </div>
+</section>
 
 <!-- ═══════════ EDITOR ═══════════ -->
 <section id="tab-editor" class="hidden" style="height:calc(100vh - 175px);min-height:460px">
@@ -79,7 +129,7 @@
       <div class="flex-1 flex flex-col min-h-0">
         <div class="flex flex-1 min-h-0">
           <pre id="edLineNums" class="bg-black/50 text-zinc-600 text-right px-2 py-3 text-xs font-mono select-none overflow-hidden m-0">1</pre>
-          <textarea id="edContent" class="flex-1 bg-black p-3 text-xs font-mono outline-none resize-none" spellcheck="false" placeholder="اختر ملفاً من الشجرة على اليمين…"></textarea>
+          <textarea id="edContent" class="flex-1 bg-black p-3 text-xs font-mono outline-none resize-none" spellcheck="false" placeholder="اختر ملفاً…"></textarea>
         </div>
         <div id="edDiffPanel" class="hidden max-h-[40%] overflow-auto bg-black border-t border-zinc-800 p-2 text-xs font-mono whitespace-pre"></div>
       </div>
@@ -90,72 +140,20 @@
 <!-- ═══════════ PRs ═══════════ -->
 <section id="tab-prs" class="hidden space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-3 flex items-center gap-2 flex-wrap">
-    <h2 class="font-semibold text-sm">🗂️ طلبات الدمج (Pull Requests)</h2>
-    <span class="text-[11px] text-zinc-500">كل PR يحتاج موافقة كل الوكلاء النشطين قبل الدمج • لكل PR محادثة كاملة</span>
+    <h2 class="font-semibold text-sm">🗂️ Pull Requests</h2>
+    <span class="text-[11px] text-zinc-500">كل PR يحتاج موافقة كل الوكلاء النشطين • لكل PR محادثة كاملة</span>
     <button onclick="loadPRs()" class="mr-auto text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↻ تحديث</button>
   </div>
   <div id="prList" class="space-y-3"></div>
 </section>
 
-<!-- ═══════════ CHAT ═══════════ -->
-<section id="tab-chat" class="hidden grid grid-cols-1 lg:grid-cols-[170px_1fr_170px] gap-3" style="height:calc(100vh - 175px);min-height:460px">
-  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-2 overflow-y-auto hidden lg:block">
-    <p class="text-[10px] uppercase text-zinc-500 px-1 pb-1">القنوات</p>
-    <div id="chanList" class="space-y-1"></div>
-  </div>
-  <div class="flex flex-col bg-zinc-900 rounded-xl border border-zinc-800 min-h-0">
-    <div class="px-3 py-2 border-b border-zinc-800 flex items-center justify-between">
-      <span id="curChan" class="font-semibold text-sm">#general</span>
-      <select id="chanSelect" class="lg:hidden bg-zinc-800 text-xs rounded px-2 py-1"></select>
-    </div>
-    <div id="msgList" class="flex-1 overflow-y-auto p-3 space-y-2.5 min-h-0"></div>
-    <div class="p-2.5 border-t border-zinc-800">
-      <div class="flex gap-2">
-        <input id="msgInput" placeholder="اكتب بالعربي…" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ring-emerald-600">
-        <button onclick="sendMsg()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium">➤</button>
-      </div>
-    </div>
-  </div>
-  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-2 overflow-y-auto hidden lg:block">
-    <p class="text-[10px] uppercase text-zinc-500 px-1 pb-1">الوكلاء</p>
-    <div id="agentMini" class="space-y-1.5"></div>
-  </div>
-</section>
-
-<!-- ═══════════ APPROVALS (legacy) ═══════════ -->
-<section id="tab-approve" class="hidden space-y-3">
-  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-    <h2 class="font-semibold mb-1">🔐 الموافقات القديمة (رسائل/أوامر)</h2>
-    <p class="text-xs text-zinc-400">الـ commits الآن تمر عبر تبويب "Pull Requests" وليس هنا.</p>
-  </div>
-  <div id="pendingList" class="space-y-2.5"></div>
-  <h3 class="text-sm text-zinc-500 px-1 pt-2">السجل</h3>
-  <div id="historyList" class="space-y-2 opacity-80"></div>
-</section>
-
 <!-- ═══════════ COMMITS ═══════════ -->
 <section id="tab-commits" class="hidden space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4 flex items-center justify-between">
-    <h2 class="font-semibold">📜 كل الـ Commits</h2>
+    <h2 class="font-semibold">📜 Commits</h2>
     <button onclick="loadCommits()" class="text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700">↻ تحديث</button>
   </div>
   <div id="commitsFeed" class="space-y-1.5"></div>
-</section>
-
-<!-- ═══════════ TERMINAL ═══════════ -->
-<section id="tab-term" class="hidden flex flex-col gap-2" style="height:calc(100vh - 175px)">
-  <div class="flex gap-1.5 flex-wrap text-xs">
-    <button onclick="quickCmd('git -C ~/idk status')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">📂 git status</button>
-    <button onclick="quickCmd('git -C ~/idk log --oneline -10')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">🔀 log</button>
-    <button onclick="quickCmd('git -C ~/idk diff --stat')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">📊 diff</button>
-    <button onclick="quickCmd('df -h / && free -h')" class="px-2.5 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700">💾 disk/mem</button>
-  </div>
-  <pre id="termOut" class="flex-1 overflow-auto bg-black rounded-xl border border-zinc-800 p-3 text-xs text-emerald-300 whitespace-pre-wrap min-h-0">$ الطرفية — تنفيذ مباشر.
-</pre>
-  <div class="flex gap-2">
-    <input id="termInput" placeholder="bash command…" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ring-emerald-600" onkeydown="if(event.key==='Enter')runTerm()">
-    <button onclick="runTerm()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500">تشغيل</button>
-  </div>
 </section>
 
 <!-- ═══════════ FILES ═══════════ -->
@@ -168,7 +166,7 @@
   <div id="fileView" class="hidden max-h-[45%] overflow-auto bg-black rounded-xl border border-zinc-800 p-3 text-xs whitespace-pre-wrap"></div>
 </section>
 
-<!-- ═══════════ GIT & ACTIONS ═══════════ -->
+<!-- ═══════════ GIT ═══════════ -->
 <section id="tab-git" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
     <div class="flex items-center justify-between mb-2">
@@ -210,36 +208,6 @@
   </div>
 </section>
 
-<!-- ═══════════ API ═══════════ -->
-<section id="tab-api" class="hidden">
-  <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-5 text-xs space-y-2 overflow-auto">
-    <h2 class="font-semibold text-sm mb-2">🔌 API — Git/Pull Requests</h2>
-    <pre class="bg-black rounded p-3 whitespace-pre-wrap text-zinc-300"># ملفات الـ repo
-curl -s "$URL/api/repo/files?path=." -H "x-code: $CODE"
-curl -s "$URL/api/repo/file?path=jni/hook.cpp" -H "x-code: $CODE"
-curl -s -X POST $URL/api/repo/file -H "x-code: $CODE" -H 'content-type: application/json' \
-  -d '{"path":"jni/hook.cpp","content":"...","baseSha":"..."}'
-
-# Pull Requests
-curl -s $URL/api/prs -H "x-code: $CODE"
-curl -s -X POST $URL/api/prs -H "x-code: $CODE" -H 'content-type: application/json' \
-  -d '{"title":"..","description":"..","files":[{"path":"..","content":"..","baseContent":".."}],"authorId":"ID","authorName":".."}'
-curl -s $URL/api/prs/PR_ID -H "x-code: $CODE"
-curl -s "$URL/api/prs/PR_ID/diff?file=0" -H "x-code: $CODE"
-
-# تصويت
-curl -s -X POST $URL/api/prs/PR_ID/vote -H "x-code: $CODE" -H 'content-type: application/json' \
-  -d '{"agentId":"ID","decision":"approve|request_changes|reject","comment":"..."}'
-
-# تعليق
-curl -s -X POST $URL/api/prs/PR_ID/comment -H "x-code: $CODE" -H 'content-type: application/json' \
-  -d '{"agentId":"ID","name":"..","content":"..."}'
-
-# دمج (يفشل إذا لم يوافق الجميع)
-curl -s -X POST $URL/api/prs/PR_ID/merge -H "x-code: $CODE" -d '{}'</pre>
-  </div>
-</section>
-
 <!-- ═══════════ SETUP ═══════════ -->
 <section id="tab-setup" class="hidden max-w-xl mx-auto space-y-3">
   <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-5 space-y-3">
@@ -264,7 +232,7 @@ curl -s -X POST $URL/api/prs/PR_ID/merge -H "x-code: $CODE" -d '{}'</pre>
 </main>
 
 <footer class="mt-auto bg-zinc-950 border-t border-zinc-800 py-2.5 text-center text-[11px] text-zinc-600">
-  مركز عمليات الوكلاء • <span id="footUp">—</span>
+  Agent Ops v4 • رسائل بلا حدود • طرفية admin لكل وكيل • <span id="footUp">—</span>
 </footer>
 
 <script>
@@ -274,6 +242,7 @@ const S = {
   channel: localStorage.getItem('ops_chan') || 'general',
   channels: ['general','interaction','quickbars','loot','vehicles','building','inventory','crash-debug','re-tools','builds'],
   messages: [], notifications: [], agents: [], tunnel: '', tab: 'chat',
+  hasMoreMessages: true, loadingOlder: false, booted: false,
 };
 const $ = id => document.getElementById(id);
 const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -291,13 +260,12 @@ function showTab(t){
   document.querySelectorAll('main > section').forEach(s=>s.classList.add('hidden'));
   const el=$('tab-'+t); if(el) el.classList.remove('hidden');
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
-  if(t==='approve') renderApprovals();
   if(t==='prs') loadPRs();
   if(t==='editor') loadRepoTree($('edTreePath').value || '.');
   if(t==='commits') loadCommits();
   if(t==='mf') mfStatus();
+  if(t==='admterm') initTerminal();
 }
-document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab==='chat'));
 
 function saveSetup(){
   S.code = $('setCode').value.trim();
@@ -316,7 +284,139 @@ async function savePat(){
   $('patMsg').textContent = r.ok ? '✅ محفوظ' : '❌ '+(r.error||'');
 }
 
-/* ═══════════════════ EDITOR ═══════════════════ */
+/* ═══════════ TERMINAL (xterm.js) ═══════════ */
+let xterm=null, xfit=null, xtermReady=false;
+
+function initTerminal(){
+  if(!S.me){ alert('سجّل أولاً'); return; }
+  $('termAgentName').textContent = S.me.name;
+  if(xtermReady){ setTimeout(()=>{ try{xfit.fit();}catch{} },50); return; }
+  if(!sock){ alert('Socket غير متصل — أعد المحاولة'); return; }
+
+  xterm = new Terminal({
+    cursorBlink: true,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 13,
+    theme: { background:'#000000', foreground:'#e4e4e7', cursor:'#10b981' },
+    scrollback: 20000,
+    convertEol: true,
+  });
+  xfit = new FitAddon.FitAddon();
+  xterm.loadAddon(xfit);
+  xterm.open($('xterm'));
+  try{ xfit.fit(); }catch{}
+
+  xterm.onData(data => {
+    if(sock && S.me) sock.emit('term:in', { agentId:S.me.id, data, code:S.code });
+  });
+  xterm.onResize(({cols,rows}) => {
+    if(sock && S.me) sock.emit('term:resize', { agentId:S.me.id, cols, rows, code:S.code });
+  });
+
+  sock.off('term:out').on('term:out', ({agentId, data}) => {
+    if(agentId===S.me?.id && xterm) xterm.write(data);
+  });
+  sock.off('term:ready').on('term:ready', ({agentId, admin}) => {
+    if(agentId===S.me?.id){
+      $('termStatus').textContent = 'متصل';
+      $('termStatus').className = 'text-emerald-400';
+      $('termAdminBadge').textContent = 'admin: '+(admin?'✅ root':'👤 user');
+      $('termAdminBadge').className = 'text-[10px] px-2 py-0.5 rounded '+(admin?'bg-red-900 text-red-200':'bg-zinc-800 text-zinc-400');
+    }
+  });
+
+  sock.emit('term:attach', { agentId: S.me.id, code: S.code });
+  xtermReady = true;
+
+  window.addEventListener('resize', () => { if(xtermReady && S.tab==='admterm'){ try{xfit.fit();}catch{} } });
+  setTimeout(()=>{ try{xfit.fit(); xterm.focus();}catch{} }, 100);
+}
+
+function termReconnect(){
+  if(!sock || !S.me) return;
+  if(xterm){ xterm.clear(); xterm.write('\r\n\x1b[33m[reconnecting…]\x1b[0m\r\n'); }
+  sock.emit('term:attach', { agentId:S.me.id, code:S.code });
+}
+function termKill(){
+  if(!confirm('إنهاء طرفيتك؟ ستبدأ جلسة جديدة عند العودة.')) return;
+  if(sock && S.me) sock.emit('term:kill', { agentId:S.me.id, code:S.code });
+  if(xterm) xterm.write('\r\n\x1b[31m[killed]\x1b[0m\r\n');
+  $('termStatus').textContent='غير متصلة';
+}
+function termClear(){ if(xterm) xterm.clear(); }
+
+/* ═══════════ CHAT (no limits + pagination) ═══════════ */
+function msgAutoGrow(el){
+  el.style.height='auto';
+  el.style.height=Math.min(el.scrollHeight,160)+'px';
+  $('msgCount').textContent = el.value.length.toLocaleString('en')+' حرف — بلا حدود';
+}
+function renderChannels(){
+  $('chanList').innerHTML = S.channels.map(c=>`
+    <button onclick="setChan('${c}')" class="w-full text-right px-2 py-1.5 rounded-lg text-xs ${c===S.channel?'bg-emerald-900/60 text-emerald-300':'hover:bg-zinc-800 text-zinc-400'}">#${c}</button>`).join('');
+  $('chanSelect').innerHTML = S.channels.map(c=>`<option ${c===S.channel?'selected':''}>${c}</option>`).join('');
+}
+function setChan(c){ S.channel=c; localStorage.setItem('ops_chan',c); $('curChan').textContent='#'+c; renderChannels(); renderMsgs(true); }
+function renderMsgs(scrollBottom){
+  const list = S.messages.filter(m=>m.channel===S.channel);
+  const loadMore = S.hasMoreMessages ? `<div class="text-center py-2"><button onclick="loadOlderMessages()" class="text-xs text-zinc-500 hover:text-zinc-300 px-3 py-1 rounded bg-zinc-800">${S.loadingOlder?'… جارٍ التحميل':'⬆️ تحميل رسائل أقدم'}</button></div>` : '';
+  $('msgList').innerHTML = loadMore + list.map(m=>{
+    const st = m.status==='approved'?'<span class="text-emerald-400 text-[10px]">✅</span>'
+      : m.status==='rejected'?'<span class="text-red-400 text-[10px]">❌</span>'
+      : `<span class="text-amber-400 text-[10px]">⏳</span>`;
+    return `<div class="fade-in bg-zinc-800/40 rounded-lg p-2.5">
+      <div class="flex items-center gap-2 text-xs"><b class="text-emerald-400">${esc(m.authorName)}</b><span class="text-zinc-500">${fmtT(m.createdAt)}</span>${st}</div>
+      <div class="text-sm mt-1 whitespace-pre-wrap break-words">${esc(m.content)}</div></div>`;
+  }).reverse().join('') || '<p class="text-zinc-600 text-sm text-center mt-8">لا رسائل</p>';
+  if(scrollBottom){ const ml=$('msgList'); ml.scrollTop=ml.scrollHeight; }
+}
+async function loadOlderMessages(){
+  if(S.loadingOlder || !S.hasMoreMessages || !S.messages.length) return;
+  S.loadingOlder = true; renderMsgs();
+  const oldest = S.messages[0];
+  try{
+    const older = await api(`/api/messages?before=${oldest.createdAt}&channel=${S.channel}&limit=200`);
+    if(!older || !older.length){ S.hasMoreMessages = false; }
+    else {
+      const ids = new Set(S.messages.map(m=>m.id));
+      const fresh = older.filter(m=>!ids.has(m.id));
+      if(!fresh.length) S.hasMoreMessages = false;
+      else S.messages = [...fresh, ...S.messages];
+    }
+  }catch(e){ console.error(e); }
+  S.loadingOlder = false;
+  const ml = $('msgList');
+  const before = ml.scrollHeight;
+  renderMsgs(false);
+  ml.scrollTop = ml.scrollHeight - before;
+}
+function checkLoadOlder(el){
+  if(el.scrollTop < 40 && S.hasMoreMessages && !S.loadingOlder){ /* loadOlderMessages(); */ }
+}
+
+function sendMsg(){
+  const el = $('msgInput');
+  const content = el.value.trim();
+  if(!content || !S.me) return;
+  api('/api/messages',{method:'POST',body:JSON.stringify({authorId:S.me.id,channel:S.channel,content,kind:'chat'})})
+    .then(r=>{
+      el.value=''; el.style.height='auto';
+      $('msgCount').textContent='0 حرف — بلا حدود';
+      if(r && r.message){
+        const exists = S.messages.find(m=>m.id===r.message.id);
+        if(!exists) S.messages.push(r.message);
+        renderMsgs(true);
+      } else poll();
+    })
+    .catch(e=>alert('فشل الإرسال: '+e.message));
+}
+$('msgInput').addEventListener('keydown', e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); }
+});
+$('msgInput').addEventListener('paste', ()=>setTimeout(()=>msgAutoGrow($('msgInput')),10));
+$('chanSelect').addEventListener('change', e=>setChan(e.target.value));
+
+/* ═══════════ EDITOR ═══════════ */
 const ED = { path:null, original:'', current:'', baseSha:null, dirty:false, showDiff:false };
 
 async function loadRepoTree(path='.'){
@@ -324,43 +424,32 @@ async function loadRepoTree(path='.'){
   $('edTreePath').value = path;
   try{
     const r = await api(`/api/repo/files?path=${encodeURIComponent(path)}`);
-    const entries = r.entries || r.files || [];
+    const entries = r.entries || [];
     $('edTree').innerHTML = entries.map(e=>{
-      const p = (e.path || (path==='.'?'':path+'/')+e.name);
+      const p = e.path || ((path==='.'?'':path+'/')+e.name);
       const safe = esc(p).replace(/'/g,"\\'");
       return `<div class="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-zinc-800 cursor-pointer" onclick="${e.dir?`loadRepoTree('${safe}')`:`openFile('${safe}')`}">
-        <span>${e.dir?'📁':'📄'}</span>
-        <span class="flex-1 truncate">${esc(e.name)}</span>
-      </div>`;
+        <span>${e.dir?'📁':'📄'}</span><span class="flex-1 truncate">${esc(e.name)}</span></div>`;
     }).join('') || '<p class="text-zinc-600 p-2">فارغ</p>';
-  }catch(e){
-    $('edTree').innerHTML = `<p class="text-red-400 p-2 text-xs">${esc(e.message)}</p>`;
-  }
+  }catch(e){ $('edTree').innerHTML = `<p class="text-red-400 p-2 text-xs">${esc(e.message)}</p>`; }
 }
-
 async function openFile(path){
   if(ED.dirty && !confirm('تعديلات غير محفوظة — تجاهل؟')) return;
   try{
     const r = await api(`/api/repo/file?path=${encodeURIComponent(path)}`);
-    ED.path = path;
-    ED.original = r.content || '';
-    ED.current = r.content || '';
-    ED.baseSha = r.sha || null;
+    ED.path = path; ED.original = r.content || ''; ED.current = r.content || '';
     ED.dirty = false;
     $('edFilePath').textContent = path;
     $('edContent').value = ED.current;
     $('edDirty').classList.add('hidden');
     updateLineNums();
-    if(ED.showDiff) showEditorDiff();
-    else $('edDiffPanel').innerHTML = '';
+    if(ED.showDiff) showEditorDiff(); else $('edDiffPanel').innerHTML='';
   }catch(e){ alert('فشل تحميل: '+e.message); }
 }
-
 function updateLineNums(){
   const lines = ($('edContent').value.match(/\n/g)||[]).length + 1;
   $('edLineNums').textContent = Array.from({length:lines},(_,i)=>i+1).join('\n');
 }
-
 $('edContent').addEventListener('input',()=>{
   ED.current = $('edContent').value;
   ED.dirty = ED.current !== ED.original;
@@ -369,16 +458,10 @@ $('edContent').addEventListener('input',()=>{
   if(ED.showDiff) showEditorDiff();
 });
 $('edContent').addEventListener('scroll',()=>{ $('edLineNums').scrollTop = $('edContent').scrollTop; });
-
-function edToggleDiff(){
-  ED.showDiff = !ED.showDiff;
-  $('edDiffPanel').classList.toggle('hidden', !ED.showDiff);
-  if(ED.showDiff) showEditorDiff();
-}
-
+function edToggleDiff(){ ED.showDiff = !ED.showDiff; $('edDiffPanel').classList.toggle('hidden', !ED.showDiff); if(ED.showDiff) showEditorDiff(); }
 function showEditorDiff(){
   if(!ED.path){ $('edDiffPanel').innerHTML='<p class="text-zinc-600">لا ملف مفتوح</p>'; return; }
-  if(ED.original === ED.current){ $('edDiffPanel').innerHTML='<p class="text-emerald-400">✓ لا تغييرات (مطابق للأصل)</p>'; return; }
+  if(ED.original === ED.current){ $('edDiffPanel').innerHTML='<p class="text-emerald-400">✓ لا تغييرات</p>'; return; }
   const diff = diffLines(ED.original, ED.current);
   $('edDiffPanel').innerHTML = diff.map(d=>{
     const cls = d.type==='add' ? 'text-emerald-400 bg-emerald-950/30' : d.type==='del' ? 'text-red-400 bg-red-950/30' : 'text-zinc-400';
@@ -386,146 +469,91 @@ function showEditorDiff(){
     return `<div class="${cls}">${pfx} ${esc(d.line)||'&nbsp;'}</div>`;
   }).join('');
 }
-
-function diffLines(a, b){
-  const la = a.split('\n'), lb = b.split('\n');
-  const n=la.length, m=lb.length;
-  if(n*m > 250000){
-    return la.map(l=>({type:'del',line:l})).concat(lb.map(l=>({type:'add',line:l})));
-  }
-  const dp = Array.from({length:n+1},()=>new Array(m+1).fill(0));
-  for(let i=1;i<=n;i++) for(let j=1;j<=m;j++){
-    dp[i][j] = la[i-1]===lb[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j],dp[i][j-1]);
-  }
-  const out=[]; let i=n,j=m;
+function diffLines(a,b){
+  const la=a.split('\n'),lb=b.split('\n'),n=la.length,m=lb.length;
+  if(n*m>250000) return la.map(l=>({type:'del',line:l})).concat(lb.map(l=>({type:'add',line:l})));
+  const dp=Array.from({length:n+1},()=>new Array(m+1).fill(0));
+  for(let i=1;i<=n;i++)for(let j=1;j<=m;j++) dp[i][j]=la[i-1]===lb[j-1]?dp[i-1][j-1]+1:Math.max(dp[i-1][j],dp[i][j-1]);
+  const out=[];let i=n,j=m;
   while(i>0||j>0){
-    if(i>0&&j>0&&la[i-1]===lb[j-1]){ out.push({type:'same',line:la[i-1]}); i--; j--; }
-    else if(j>0 && (i===0 || dp[i][j-1]>=dp[i-1][j])){ out.push({type:'add',line:lb[j-1]}); j--; }
-    else { out.push({type:'del',line:la[i-1]}); i--; }
+    if(i>0&&j>0&&la[i-1]===lb[j-1]){out.push({type:'same',line:la[i-1]});i--;j--;}
+    else if(j>0&&(i===0||dp[i][j-1]>=dp[i-1][j])){out.push({type:'add',line:lb[j-1]});j--;}
+    else{out.push({type:'del',line:la[i-1]});i--;}
   }
   return out.reverse();
 }
-
-function edRevert(){
-  if(!confirm('تراجع عن كل التعديلات؟')) return;
-  ED.current = ED.original;
-  $('edContent').value = ED.original;
-  ED.dirty = false;
-  $('edDirty').classList.add('hidden');
-  updateLineNums();
-  if(ED.showDiff) showEditorDiff();
-}
-
+function edRevert(){ if(!confirm('تراجع عن كل التعديلات؟')) return; ED.current=ED.original; $('edContent').value=ED.original; ED.dirty=false; $('edDirty').classList.add('hidden'); updateLineNums(); if(ED.showDiff) showEditorDiff(); }
 async function edSaveDraft(){
   if(!ED.path) return alert('اختر ملفاً');
   try{
-    const r = await api('/api/repo/file',{method:'POST',body:JSON.stringify({
-      path:ED.path, content:ED.current, baseSha:ED.baseSha
-    })});
-    ED.original = ED.current; ED.dirty = false;
-    if(r.sha) ED.baseSha = r.sha;
-    $('edDirty').classList.add('hidden');
-    alert('✅ محفوظ في مجلد العمل');
+    await api('/api/repo/file',{method:'POST',body:JSON.stringify({path:ED.path,content:ED.current})});
+    ED.original=ED.current; ED.dirty=false; $('edDirty').classList.add('hidden');
+    alert('✅ محفوظ');
   }catch(e){ alert('فشل: '+e.message); }
 }
-
 async function edProposePR(){
   if(!ED.path) return alert('اختر ملفاً');
-  if(!ED.dirty) return alert('لا تعديلات لاقتراحها');
-  const title = prompt('عنوان الـ PR:', 'تعديل '+ED.path);
-  if(!title) return;
-  const description = prompt('وصف:', '') || '';
+  if(!ED.dirty) return alert('لا تعديلات');
+  const title = prompt('عنوان الـ PR:', 'تعديل '+ED.path); if(!title) return;
+  const description = prompt('وصف:','') || '';
   try{
     await api('/api/prs',{method:'POST',body:JSON.stringify({
       title, description,
       files:[{path:ED.path, content:ED.current, baseContent:ED.original}],
       authorId:S.me.id, authorName:S.me.name
     })});
-    alert('✅ تم إنشاء PR — بانتظار الموافقات');
+    alert('✅ تم إنشاء PR');
     showTab('prs');
   }catch(e){ alert('فشل: '+e.message); }
 }
 
-/* ═══════════════════ PULL REQUESTS ═══════════════════ */
+/* ═══════════ PRs ═══════════ */
 async function loadPRs(){
   if(!S.me) return;
   try{
     const prs = await api('/api/prs');
-    $('prList').innerHTML = prs.map(renderPRCard).join('') || '<p class="text-zinc-600 text-center py-6 text-sm">لا PRs بعد — ابدأ بتعديل ملف من تبويب محرر الكود</p>';
+    $('prList').innerHTML = prs.map(renderPRCard).join('') || '<p class="text-zinc-600 text-center py-6 text-sm">لا PRs بعد</p>';
     const openCount = prs.filter(p=>['open','changes_requested','approved'].includes(p.status)).length;
     $('prCount').textContent = openCount;
     $('prCount').classList.toggle('hidden', !openCount);
   }catch(e){ $('prList').innerHTML = `<p class="text-red-400">${esc(e.message)}</p>`; }
 }
-
 function renderPRCard(pr){
-  const statusMap = {
-    open:{color:'amber',label:'⏳ مفتوح'},
-    changes_requested:{color:'amber',label:'✎ يحتاج تعديل'},
-    approved:{color:'emerald',label:'✅ معتمد'},
-    merged:{color:'blue',label:'🔀 مدموج'},
-    closed:{color:'zinc',label:'🚫 مغلق'},
-    rejected:{color:'red',label:'❌ مرفوض'},
-  };
+  const statusMap = { open:{c:'amber',l:'⏳ مفتوح'}, changes_requested:{c:'amber',l:'✎ يحتاج تعديل'}, approved:{c:'emerald',l:'✅ معتمد'}, merged:{c:'blue',l:'🔀 مدموج'}, closed:{c:'zinc',l:'🚫 مغلق'}, rejected:{c:'red',l:'❌ مرفوض'} };
   const s = statusMap[pr.status] || statusMap.open;
-
-  const fileSummary = (pr.files||[]).map((f,i)=>{
-    const add = f.additions ?? countLines(f.content, f.baseContent, 'add');
-    const del = f.deletions ?? countLines(f.content, f.baseContent, 'del');
-    return `<div class="flex items-center gap-2 py-0.5 text-xs">
-      <span class="text-emerald-400">+${add}</span>
-      <span class="text-red-400">-${del}</span>
+  const fileSummary = (pr.files||[]).map((f,i)=>`<div class="flex items-center gap-2 py-0.5 text-xs">
+      <span class="text-emerald-400">+${f.additions||0}</span><span class="text-red-400">-${f.deletions||0}</span>
       <code class="flex-1 truncate text-zinc-300">${esc(f.path)}</code>
-      <button onclick="togglePRDiff('${pr.id}',${i})" class="text-[10px] px-1.5 rounded bg-zinc-800 hover:bg-zinc-700">عرض</button>
-    </div>`;
-  }).join('');
-
+      <button onclick="togglePRDiff('${pr.id}',${i})" class="text-[10px] px-1.5 rounded bg-zinc-800 hover:bg-zinc-700">عرض</button></div>`).join('');
   const votes = (pr.required||[]).map(id=>{
-    const a = S.agents.find(x=>x.id===id);
-    const v = (pr.votes||[]).find(x=>x.agentId===id);
-    const d = v?.decision;
+    const a=S.agents.find(x=>x.id===id), v=(pr.votes||[]).find(x=>x.agentId===id);
+    const d=v?.decision;
     const cls = d==='approve'?'bg-emerald-800 text-emerald-200':d==='request_changes'?'bg-amber-800 text-amber-200':d==='reject'?'bg-red-800 text-red-200':'bg-zinc-700 text-zinc-400';
-    const lbl = d==='approve'?'✅ موافق':d==='request_changes'?'✎ تعديل':d==='reject'?'❌ رافض':'… لم يصوّت';
-    const title = v?.comment ? ` title="${esc(v.comment)}"` : '';
-    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${cls}"${title}>${a?esc(a.name):id.slice(0,4)}: ${lbl}</span>`;
+    const lbl = d==='approve'?'✅':d==='request_changes'?'✎':d==='reject'?'❌':'…';
+    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${cls}" title="${esc(v?.comment||'')}">${a?esc(a.name):id.slice(0,4)}: ${lbl}</span>`;
   }).join(' ');
-
   const mine = S.me && (pr.required||[]).includes(S.me.id) && !(pr.votes||[]).some(v=>v.agentId===S.me.id);
   const canVote = mine && ['open','changes_requested'].includes(pr.status);
   const voteBtns = canVote ? `
     <button onclick="votePR('${pr.id}','approve')" class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600">✓ موافقة</button>
     <button onclick="votePR('${pr.id}','request_changes')" class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600">✎ طلب تعديل</button>
-    <button onclick="votePR('${pr.id}','reject')" class="text-xs px-2.5 py-1 rounded bg-red-800 hover:bg-red-700">✗ رفض</button>
-  ` : '';
-
+    <button onclick="votePR('${pr.id}','reject')" class="text-xs px-2.5 py-1 rounded bg-red-800 hover:bg-red-700">✗ رفض</button>` : '';
   const allApproved = (pr.required||[]).length>0 && (pr.required||[]).every(id=>(pr.votes||[]).some(v=>v.agentId===id && v.decision==='approve'));
-  const mergeBtn = (allApproved && !['merged','closed','rejected'].includes(pr.status))
-    ? `<button onclick="mergePR('${pr.id}')" class="text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 font-medium">🔀 دمج الآن</button>` : '';
-
-  const comments = (pr.comments||[]).map(c=>`
-    <div class="bg-zinc-800/40 rounded p-1.5 text-xs">
-      <div class="flex items-center gap-1.5 mb-0.5">
-        <b class="text-emerald-400 text-[11px]">${esc(c.name||'?')}</b>
-        <span class="text-zinc-600 text-[10px]">${fmtT(c.at)}</span>
-      </div>
-      <div class="whitespace-pre-wrap">${esc(c.content)}</div>
-    </div>
-  `).join('');
+  const mergeBtn = (allApproved && !['merged','closed','rejected'].includes(pr.status)) ? `<button onclick="mergePR('${pr.id}')" class="text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 font-medium">🔀 دمج الآن</button>` : '';
+  const comments = (pr.comments||[]).map(c=>`<div class="bg-zinc-800/40 rounded p-1.5 text-xs"><div class="flex items-center gap-1.5 mb-0.5"><b class="text-emerald-400 text-[11px]">${esc(c.name||'?')}</b><span class="text-zinc-600 text-[10px]">${fmtT(c.at)}</span></div><div class="whitespace-pre-wrap">${esc(c.content)}</div></div>`).join('');
 
   return `<div class="fade-in bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-2" id="pr-${pr.id}">
-    <div class="flex items-center gap-2 flex-wrap">
-      <b class="text-sm">${esc(pr.title)}</b>
-      <span class="text-[10px] px-2 py-0.5 rounded bg-${s.color}-900/60 text-${s.color}-300">${s.label}</span>
+    <div class="flex items-center gap-2 flex-wrap"><b class="text-sm">${esc(pr.title)}</b>
+      <span class="text-[10px] px-2 py-0.5 rounded bg-${s.c}-900/60 text-${s.c}-300">${s.l}</span>
       <span class="text-[10px] text-zinc-500">بواسطة ${esc(pr.authorName||'?')}</span>
-      <span class="text-[10px] text-zinc-600 mr-auto">${new Date(pr.createdAt).toLocaleString()}</span>
-    </div>
+      <span class="text-[10px] text-zinc-600 mr-auto">${new Date(pr.createdAt).toLocaleString()}</span></div>
     ${pr.description?`<p class="text-xs text-zinc-400 whitespace-pre-wrap">${esc(pr.description)}</p>`:''}
     <div class="bg-black/40 rounded p-2">${fileSummary || '<p class="text-zinc-600 text-xs">لا ملفات</p>'}</div>
     <div class="flex flex-wrap gap-1 items-center">${votes}</div>
     <div class="flex gap-1.5 flex-wrap">${voteBtns}${mergeBtn}</div>
     <div class="border-t border-zinc-800 pt-2 space-y-1.5">
       <p class="text-[10px] text-zinc-500">💬 المحادثة (${(pr.comments||[]).length})</p>
-      ${comments||'<p class="text-[10px] text-zinc-600">لا تعليقات بعد</p>'}
+      ${comments||'<p class="text-[10px] text-zinc-600">لا تعليقات</p>'}
       <div class="flex gap-1.5">
         <input id="prc-${pr.id}" placeholder="اكتب تعليقاً…" class="flex-1 bg-zinc-800 rounded px-2 py-1.5 text-xs" onkeydown="if(event.key==='Enter')addPRComment('${pr.id}')">
         <button onclick="addPRComment('${pr.id}')" class="text-xs px-2 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600">إرسال</button>
@@ -533,131 +561,56 @@ function renderPRCard(pr){
     </div>
   </div>`;
 }
-
-function countLines(newC, oldC, type){
-  if(!oldC && !newC) return 0;
-  const la = (oldC||'').split('\n'), lb = (newC||'').split('\n');
-  const diff = diffLines(oldC||'', newC||'');
-  return diff.filter(d=>d.type===type).length;
-}
-
 async function togglePRDiff(prId, idx){
-  const container = $(`pr-${prId}`);
-  let el = container?.querySelector(`[data-diff="${prId}-${idx}"]`);
+  const container = $(`pr-${prId}`); if(!container) return;
+  let el = container.querySelector(`[data-diff="${prId}-${idx}"]`);
   if(!el){
     el = document.createElement('div');
     el.className = 'text-[10px] font-mono bg-black p-2 rounded overflow-auto max-h-64';
     el.dataset.diff = `${prId}-${idx}`;
     container.querySelector('.bg-black\\/40').after(el);
   }
-  if(el.dataset.loaded === '1' && !el.classList.contains('hidden') === false){
-    // toggle off
-    if(!el.classList.contains('hidden')){ el.classList.add('hidden'); return; }
-  }
-  if(el.classList.contains('hidden')) el.classList.remove('hidden');
-  if(el.dataset.loaded === '1') return;
+  if(!el.classList.contains('hidden')){ el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  if(el.dataset.loaded==='1') return;
   el.textContent = 'تحميل…';
   try{
     const r = await api(`/api/prs/${prId}/diff?file=${idx}`);
     el.innerHTML = colorizeDiff(r.diff || '');
-    el.dataset.loaded = '1';
+    el.dataset.loaded='1';
   }catch(e){ el.textContent = 'خطأ: '+e.message; }
 }
-
 function colorizeDiff(d){
   return d.split('\n').map(l=>{
     let cls='';
     if(l.startsWith('+') && !l.startsWith('+++')) cls='text-emerald-400 bg-emerald-950/20';
     else if(l.startsWith('-') && !l.startsWith('---')) cls='text-red-400 bg-red-950/20';
     else if(l.startsWith('@@')) cls='text-blue-400 font-bold';
-    else if(l.startsWith('diff ')||l.startsWith('index ')||l.startsWith('---')||l.startsWith('+++')) cls='text-zinc-600';
+    else if(/^(diff |index |---|\+\+\+)/.test(l)) cls='text-zinc-600';
     return `<div class="${cls}">${esc(l)||'&nbsp;'}</div>`;
   }).join('');
 }
-
 async function votePR(id, decision){
-  let comment = '';
+  let comment='';
   if(decision==='request_changes') comment = prompt('سبب طلب التعديل:') || '';
   if(decision==='reject') comment = prompt('سبب الرفض:') || '';
-  try{
-    await api(`/api/prs/${id}/vote`,{method:'POST',body:JSON.stringify({
-      agentId:S.me.id, decision, comment
-    })});
-    loadPRs();
-  }catch(e){ alert('فشل: '+e.message); }
+  try{ await api(`/api/prs/${id}/vote`,{method:'POST',body:JSON.stringify({agentId:S.me.id,decision,comment})}); loadPRs(); }
+  catch(e){ alert('فشل: '+e.message); }
 }
-
 async function addPRComment(id){
   const inp = $(`prc-${id}`); if(!inp) return;
   const content = inp.value.trim(); if(!content) return;
-  inp.value = '';
-  try{
-    await api(`/api/prs/${id}/comment`,{method:'POST',body:JSON.stringify({
-      agentId:S.me.id, name:S.me.name, content
-    })});
-    loadPRs();
-  }catch(e){ alert('فشل: '+e.message); }
+  inp.value='';
+  try{ await api(`/api/prs/${id}/comment`,{method:'POST',body:JSON.stringify({agentId:S.me.id,name:S.me.name,content})}); loadPRs(); }
+  catch(e){ alert('فشل: '+e.message); }
 }
-
 async function mergePR(id){
-  if(!confirm('دمج الـ PR؟ يجب أن يكون معتمداً من الجميع.')) return;
-  try{
-    await api(`/api/prs/${id}/merge`,{method:'POST',body:'{}'});
-    alert('✅ تم الدمج');
-    loadPRs(); loadCommits();
-  }catch(e){ alert('فشل الدمج: '+e.message); }
+  if(!confirm('دمج الـ PR؟')) return;
+  try{ await api(`/api/prs/${id}/merge`,{method:'POST',body:JSON.stringify({agentId:S.me.id})}); alert('✅ تم الدمج'); loadPRs(); loadCommits(); }
+  catch(e){ alert('فشل الدمج: '+e.message); }
 }
 
-/* ═══════════════════ REST ═══════════════════ */
-function renderChannels(){
-  $('chanList').innerHTML = S.channels.map(c=>`
-    <button onclick="setChan('${c}')" class="w-full text-right px-2 py-1.5 rounded-lg text-xs ${c===S.channel?'bg-emerald-900/60 text-emerald-300':'hover:bg-zinc-800 text-zinc-400'}">#${c}</button>`).join('');
-  $('chanSelect').innerHTML = S.channels.map(c=>`<option ${c===S.channel?'selected':''}>${c}</option>`).join('');
-}
-function setChan(c){ S.channel=c; localStorage.setItem('ops_chan',c); $('curChan').textContent='#'+c; renderChannels(); renderMsgs(); }
-function renderMsgs(){
-  const list = S.messages.filter(m=>m.channel===S.channel);
-  $('msgList').innerHTML = list.map(m=>{
-    const st = m.status==='approved'?'<span class="text-emerald-400 text-[10px]">✅</span>'
-      : m.status==='rejected'?'<span class="text-red-400 text-[10px]">❌</span>'
-      : `<span class="text-amber-400 text-[10px]">⏳</span>`;
-    return `<div class="fade-in bg-zinc-800/40 rounded-lg p-2.5">
-      <div class="flex items-center gap-2 text-xs"><b class="text-emerald-400">${esc(m.authorName)}</b><span class="text-zinc-500">${fmtT(m.createdAt)}</span>${st}</div>
-      <div class="text-sm mt-1 whitespace-pre-wrap">${esc(m.content)}</div></div>`;
-  }).reverse().join('') || '<p class="text-zinc-600 text-sm text-center mt-8">لا رسائل</p>';
-  $('msgList').scrollTop=$('msgList').scrollHeight;
-}
-function sendMsg(){
-  const content=$('msgInput').value.trim(); if(!content||!S.me) return;
-  api('/api/messages',{method:'POST',body:JSON.stringify({authorId:S.me.id,channel:S.channel,content,kind:'chat'})}).then(()=>{$('msgInput').value='';poll();});
-}
-$('msgInput').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
-$('chanSelect').addEventListener('change',e=>setChan(e.target.value));
-
-function notifCard(n){
-  const votes = (n.required||[]).map(id=>{
-    const a=S.agents.find(x=>x.id===id), v=(n.votes||[]).find(v=>v.agentId===id);
-    const d=v?v.decision:null;
-    return `<span class="text-[10px] px-1.5 py-0.5 rounded ${d==='approve'?'bg-emerald-800':d==='reject'?'bg-red-800':'bg-zinc-700'}">${a?esc(a.name):id.slice(0,4)}</span>`;
-  }).join(' ');
-  const mine = S.me && n.required.includes(S.me.id) && !(n.votes||[]).some(v=>v.agentId===S.me.id);
-  const btns = n.status==='pending' && mine ?
-    `<button onclick="voteNotif('${n.id}','approve')" class="text-xs px-2 py-1 rounded bg-emerald-700">✓</button>
-     <button onclick="voteNotif('${n.id}','reject')" class="text-xs px-2 py-1 rounded bg-red-800">✗</button>` : '';
-  return `<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
-    <div class="flex items-center gap-2 flex-wrap text-xs"><b>${esc(n.label)}</b>
-      <span class="mr-auto">${n.status}</span></div>
-    <div class="flex flex-wrap gap-1 mt-2">${votes}<span class="mr-auto flex gap-1.5">${btns}</span></div></div>`;
-}
-function renderApprovals(){
-  const pend=S.notifications.filter(n=>n.status==='pending');
-  const hist=S.notifications.filter(n=>n.status!=='pending').slice(-30).reverse();
-  $('pendingList').innerHTML=pend.map(notifCard).join('')||'<p class="text-zinc-600 text-sm">✨ لا شيء معلّق</p>';
-  $('historyList').innerHTML=hist.map(notifCard).join('');
-  $('pendCount').textContent=pend.length; $('pendCount').classList.toggle('hidden',!pend.length);
-}
-function voteNotif(id,decision){ api(`/api/notifications/${id}/vote`,{method:'POST',body:JSON.stringify({agentId:S.me.id,decision})}).then(poll); }
-
+/* ═══════════ COMMITS ═══════════ */
 async function loadCommits(){
   try{
     const list=await api('/api/commits?per=40');
@@ -671,88 +624,33 @@ async function loadCommits(){
   }catch(e){ $('commitsFeed').innerHTML=`<p class="text-red-400 text-xs">${esc(e.message)}</p>`; }
 }
 
-async function runTerm(){
-  const cmd=$('termInput').value.trim(); if(!cmd) return;
-  $('termOut').textContent+=`\n$ ${cmd}\n`; $('termInput').value='';
-  try{
-    const r=await api('/api/exec',{method:'POST',body:JSON.stringify({cmd,timeout:300})});
-    $('termOut').textContent+=(r.stdout||'')+(r.stderr?`\n[stderr] ${r.stderr}`:'')+`\n[exit ${r.code}]\n`;
-  }catch(e){ $('termOut').textContent+='[error] '+e.message+'\n'; }
-  $('termOut').scrollTop=$('termOut').scrollHeight;
-}
-function quickCmd(c){ $('termInput').value=c; runTerm(); }
-
+/* ═══════════ FILES ═══════════ */
 async function lsDir(){
   const p=$('fsPath').value.trim()||'/home/runner';
   const r=await api(`/api/fs/ls?path=${encodeURIComponent(p)}`);
   $('fsList').innerHTML=(r.error?`<p class="text-red-400">${esc(r.error)}</p>`:(r.entries||[]).map(e=>`
     <div class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-zinc-800 cursor-pointer" onclick="${e.dir?`lsPath('${(r.path+'/'+e.name).replace(/'/g,"\\'")}')`:`readFile('${(r.path+'/'+e.name).replace(/'/g,"\\'")}')`}">
       <span>${e.dir?'📁':'📄'}</span><span class="flex-1 truncate">${esc(e.name)}</span>
-      <span class="text-[10px] text-zinc-500">${e.dir?'':fmtB(e.size)}</span>
-    </div>`).join('')||'<p class="text-zinc-600">فارغ</p>');
+      <span class="text-[10px] text-zinc-500">${e.dir?'':fmtB(e.size)}</span></div>`).join('')||'<p class="text-zinc-600">فارغ</p>');
 }
 function lsPath(p){ $('fsPath').value=p; lsDir(); }
 async function readFile(p){
-  const r=await api(`/api/fs/read?path=${encodeURIComponent(p)}&bytes=200000`);
+  const r=await api(`/api/fs/read?path=${encodeURIComponent(p)}&bytes=2000000`);
   $('fileView').classList.remove('hidden');
   $('fileView').textContent = r.binary? `[binary]` : `// ${r.path}\n${r.text}`;
 }
 $('fsPath').addEventListener('keydown',e=>{if(e.key==='Enter')lsDir();});
 
+/* ═══════════ GIT ═══════════ */
 async function gitAct(what){
   const r = ['pull','push'].includes(what) ? await api(`/api/git/${what}`,{method:'POST',body:'{}'}) : await api(`/api/git/${what}`);
   $('gitOut').textContent=`$ git ${what}\n`+(r.out||'');
 }
 
+/* ═══════════ MEDIAFIRE ═══════════ */
 async function mfStart(){ await api('/api/mf/download',{method:'POST',body:JSON.stringify({url:$('mfUrl').value.trim()})}); mfStatus(); }
 async function mfStatus(){ const r=await api('/api/mf/status'); $('mfOut').textContent=r.status||'—'; }
 
+/* ═══════════ AGENTS ═══════════ */
 function renderAgents(){
-  const html=a=>`<div class="flex items-center gap-2 text-sm"><span class="w-2 h-2 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><b>${esc(a.name)}</b><span class="text-xs text-zinc-500">${esc(a.role)}</span>${a.id===S.me?.id?'<span class="text-[9px] px-1 rounded bg-emerald-900">أنت</span>':''}</div>`;
-  $('agentFull').innerHTML=S.agents.map(html).join('')||'<p class="text-zinc-600">لا وكلاء</p>';
-  $('agentMini').innerHTML=S.agents.map(a=>`<div class="flex items-center gap-1.5 text-xs"><span class="w-1.5 h-1.5 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><span class="truncate">${esc(a.name)}</span></div>`).join('');
-}
-
-let polling=false;
-async function poll(){
-  if(polling||!S.me) return; polling=true;
-  try{
-    api(`/api/agents/${S.me.id}/ping`,{method:'POST',body:'{}'}).catch(()=>{});
-    const st=await api('/api/state');
-    S.channels=st.channels||S.channels; S.agents=st.agents||[]; S.tunnel=st.tunnel||'';
-    S.messages=st.messages||[]; S.notifications=st.notifications||[];
-    renderChannels(); renderMsgs(); renderAgents();
-    if(S.tab==='approve') renderApprovals();
-    $('tunnelChip').textContent='tunnel: '+(S.tunnel||'غير محدد');
-    $('hdrRepo').textContent=`${st.owner}/${st.repo} • PAT ${st.pat?'✓':'✗'}`;
-    const h=await fetch('/api/health').then(r=>r.json()).catch(()=>null);
-    if(h){ $('healthDot').textContent='●'; $('footUp').textContent=`تشغيل ${Math.floor(h.uptimeSec/60)} د`; }
-  }catch(e){}
-  polling=false;
-}
-
-let sock=null;
-function connectSocket(){
-  try{
-    sock=io({transports:['websocket','polling']});
-    sock.on('message:new',m=>{ S.messages.push(m); if(m.channel===S.channel) renderMsgs(); });
-    sock.on('message:updated',m=>{ const i=S.messages.findIndex(x=>x.id===m.id); if(i>=0)S.messages[i]=m; renderMsgs(); });
-    sock.on('agents:update',a=>{ S.agents=a; renderAgents(); });
-    sock.on('pr:new',()=>{ if(S.tab==='prs') loadPRs(); });
-    sock.on('pr:updated',()=>{ if(S.tab==='prs') loadPRs(); });
-    sock.on('pr:comment',()=>{ if(S.tab==='prs') loadPRs(); });
-    sock.on('commit:new',()=>{ if(S.tab==='commits') loadCommits(); });
-  }catch(e){ sock=null; }
-}
-
-function boot(){
-  if(!S.me) return;
-  $('meBadge').textContent=S.me.name;
-  setChan(S.channel);
-  poll(); setInterval(poll,4000);
-  connectSocket();
-}
-if(S.code&&S.me){ boot(); } else { showTab('setup'); if(S.code)$('setCode').value=S.code; }
-</script>
-</body>
-</html>
+  const html=a=>`<div class="flex items-center gap-2 text-sm"><span class="w-2 h-2 rounded-full ${a.online?'bg-emerald-400':a.active?'bg-amber-400':'bg-zinc-600'}"></span><b>${esc(a.name)}</b><span class="text-xs text-zinc-500">${esc(a.role)}</span>${a.id===
